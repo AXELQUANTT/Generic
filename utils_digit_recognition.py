@@ -17,7 +17,7 @@ def compute_J(yhat,y) -> float:
     return (1/len(yhat))*sum(yhat!=y)
 
 # This function will return three outputs, the model itself and the costs in the train and cross validation datasets
-def build_model_and_train(model_params, x_train, y_train, x_crossval, y_crossval, categories):
+def build_model_and_train(model_params, x_train, y_train, x_crossval, y_crossval, categories, n_epoch):
     # This function is devoted to build and train a NN
     # and compute the Cost of its predictions on the train and
     # cross validation datasets
@@ -49,7 +49,7 @@ def build_model_and_train(model_params, x_train, y_train, x_crossval, y_crossval
     
     # Finally train the model (perform backpropagation)
     # epoch specifies the iterations of the adam optimizer
-    history = model.fit(x_t,y_t, epochs=25)
+    history = model.fit(x_t,y_t, epochs=n_epoch,verbose=0)
 
     print(model.layers)
     print(f"model summary = {model.summary()}")
