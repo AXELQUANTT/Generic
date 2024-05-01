@@ -1,12 +1,11 @@
-# The whole idea of this package is to create multiple classes, where
-# each class will be a different Machine Learning algorithm
 
-# Exercise 1. Implement the class gradient descent
+""" The whole idea of this package is to create multiple classes,
+    where each class will be a different Machine Learning algorithm """
+
 import numpy as np
 from typing import Tuple
 import warnings
 import math
-
 
 class GradDescLinReg():
 
@@ -227,3 +226,192 @@ class GradDescLogReg:
         # in which case raise a program error
         raise ValueError(f"LogRegression: None of the alphas={alphas} makes /n" 
                          f" Gradient Descent converge, check")
+
+# Create from scratch a class for decision trees, adding some features to
+# make it a random forest and extreme gradient boosting as well
+class DecisionTreeClassifier:
+
+    # We have to make sure the following functions are in there
+    # entropy => Ok
+    # split_dataset => creates two subpopulations after the split => Ok
+    # compute_information_gain => computes information gain for a given population and feature chosen
+    # get_best_split => compute which is the feature that delivers the highest information_gain
+    # predict =>
+
+    def __init__(self, x:np.array, y:np.array, thresh:float):
+    # TO-DO: Add a more complex break case for the recursive creation
+    # of the tree.
+        self.x = x
+        self.y = y
+        self.tree = []
+        # prob > thresh label the data as positive
+        self.thresh = thresh
+
+    # TO-DO: We need to know for each feature whether that feature is discrete
+    # or contiguous. Something like a pre-formatting routine would be needed
+
+
+    # Assume all variables are discrete at this point
+    def _compute_entropy(sample:np.array):
+        
+        if len(sample)==0:
+            return 0
+        
+        p1 = sum(sample)/len(sample)
+
+        if p1==0 or p1==1:
+            return 0
+        
+        entropy = -1*p1*np.log2(p1) - (1-p1)*np.log2(1-p1)
+        
+        return entropy
+
+
+    def _split_dataset(self,
+                       x:np.array,
+                       selected_idxs:np.array,
+                       feature_idx:list[int]) -> Tuple[list[int],list[int]]:
+        
+        # This function will divide our dataset in two arrays
+        # left_array wil contain the guys whose value in the proposed
+        # feature is 1 (right array will contain the 0s)
+        left_arr = np.array([])
+        right_arr = np.array([])
+        
+        for idx in selected_idxs:
+            if x[idx,feature_idx]==1:
+                left_arr.append(idx)
+            else:
+                right_arr.append(idx)
+        
+        return (left_arr,right_arr)
+    
+    # ig stands for information gain
+    def _compute_ig(self,
+                    pre:np.array,
+                    left:np.array,
+                    right:np.array,
+                    y:np.array) -> float:
+        
+        # Compute auxiliary quantities
+        p1root = sum(y[pre])/len(pre)
+        p1left = sum(y[left])/len(left)
+        p1right = sum(y[right])/len(right)
+
+        wleft = len(left)/len(pre)
+        wright = len(right)/len(pre)
+
+        hroot = self._compute_entropy(p1root)
+        hleft = self._compute_entropy(p1left)
+        hright = self._compute_entropy(p1right)
+
+        ig = hroot-(wleft*hleft+wright*hright)
+
+        return ig
+    
+    def _select_best_feature(self,x,y,selected_idxs) -> int:
+        # This function returns the index of the best feature (the one
+        # that minimizes entropy, i.e the one that maximizes purity)
+
+        # This method is devoted to select which is the best
+        # feature to split the data on.
+        feature_idxs = range(x.shape[1])
+        max_ig = float("-inf")
+
+        for feat_idx in feature_idxs:
+            # Split the dataset according to the feature
+            # and compute information gain
+            left_arr,right_arr = self._split_dataset(x,selected_idxs,feature_idx=feat_idx)
+            ig_feat = self._compute_ig(x,left_arr,right_arr,y)
+            if ig_feat > max_ig:
+                max_ig = ig_feat
+                best_feat = feat_idx
+
+        return best_feat
+    
+    # Now the question is how do we even store the 
+    # information about the classifier?
+    # What defines a given tree is the sequence of features that split
+    # the population on very single node. Therefore,
+    # each node in the tree will have a single value, a left
+    # and right argument. The value of the node will be the index
+    # of the best feature that splits the population.
+
+    def create_tree(self,node_indices:np.array,
+                    branch_name:str,max_depth:int,
+                    curr_depth:int, tree:list) -> None:
+        
+        # This function will generate the whole tree. For now the tree
+        # will be a list of tuples of four elements, the index
+        # of the feature being selected, the index on the left split
+        # the indexs on the right split and the branch name
+        
+        # What are the base cases?
+        
+        # We can have up to four different criterias to stop the recursion
+        #       - Information gain is lower than a given threshold
+        #       - Node is 100% one class
+        #       - Tree has reached max depth
+        #       - N of examples in a node after the split is below a threshold
+        
+        # For now we will proceed which just one criteria, which will be the
+        # reaching the max depth. For now the tree will be just an array
+        # containing the feature idx, left indixes and the right indices
+
+        # Step 0) Check whether base condition (stop the recursive loop)
+        # is satisfied or not
+
+        if curr_depth==max_depth:
+            print(f"curr_depth=max_depth={curr_depth} for branch name = {branch_name}")
+            return
+
+
+        # Step 1) Compute which is the best feature to split
+        best_feat_idx = self._select_best_feature(x=self.x,y=self.y,selected_idxs=node_indices)
+
+        # Step 2) Split according to a given feature and save it into our tree
+        left_idx, right_idx = self._split_dataset(x=self.x,selected_idxs=node_indices,feature_idx=best_feat_idx)
+        self.tree.append((left_idx,right_idx,best_feat_idx,branch_name))
+
+        # Step 3) Repeat 1) this time with root.left and root.right
+        self.create_tree(node_indices=left_idx,
+                         branch_name=branch_name+"_left",max_depth=max_depth,
+                        curr_depth=curr_depth+1, tree=tree)
+        self.create_tree(node_indices=right_idx,
+                         branch_name=branch_name+"_right",max_depth=max_depth,
+                        curr_depth=curr_depth+1, tree=tree)
+
+
+    def predict(self,x:np.array,node=0) -> np.array:
+
+        # Perform a sanity check. If we have not
+        # created the tree yet, warn the user
+        if not self.tree:
+            raise Warning("predict can not be called before create_tree, call that method before") 
+        
+        # How do we apply the tree to the given input?
+        # Seems recursive is the only way
+
+        #for node in self.tree:
+        feature_split = self.tree[node][2]
+        left_arr,right_arr = self._split_dataset(x=x, selected_idxs=range(x.shape[0]), feature_idx=feature_split)
+
+        self.predict(left_arr,node=node+1)
+        self.predict(left_arr,node=node+2)
+        
+
+
+
+        # Once we have iterated all the tree and we reach 
+        # a leaf, we can say what's the probability that
+        # a given element within that group is a given category.
+        # If the prob is > 0.5 then we label it as positive
+
+        
+
+
+
+# Create a randomforestclassifier
+#class RandomForestClassifier:
+#    def __init__(self) -> None:
+#        
