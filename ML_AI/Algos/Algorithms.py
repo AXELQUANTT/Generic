@@ -391,17 +391,19 @@ class DecisionTreeClassifier:
         
         # How do we apply the tree to the given input?
         # Seems recursive is the only way
+        
+        # Last element of the tuple of the tree contains a flag to know whether
+        # the node is a leaf or not. In case it is, update our dictionary with the
+        # predicted values
+        if self.tree[node][-1]:
+            
 
-        #for node in self.tree:
         feature_split = self.tree[node][2]
         left_arr,right_arr = self._split_dataset(x=x, selected_idxs=range(x.shape[0]), feature_idx=feature_split)
 
         self.predict(left_arr,node=node+1)
-        self.predict(left_arr,node=node+2)
+        self.predict(right_arr,node=node+1)
         
-
-
-
         # Once we have iterated all the tree and we reach 
         # a leaf, we can say what's the probability that
         # a given element within that group is a given category.

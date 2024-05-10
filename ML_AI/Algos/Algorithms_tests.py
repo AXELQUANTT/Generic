@@ -52,3 +52,6 @@ tests.append(all(abs(reg_comp_params)<abs(comp_params)))
 
 print(f"Passed test? {all(tests)}!")
 print(f"Out of the {len(tests)} tests,{sum(tests)} have passed")
+
+# Make a test for a NN with the same layers and the same data
+# but with only sigmoid, or with ReLU and sigmoid.
