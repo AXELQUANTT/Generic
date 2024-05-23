@@ -8,17 +8,7 @@ import warnings
 import math
 
 class GradDescLinReg():
-
-    # TO-DO: Make gradient descent a standalone algorithm that given the predictions
-    # alpha, derivatives and the number of iterations, returns the best fitted estimates
-
-    # TO-DO: Adjust logging with the correct name of the class
-
-    # TO-DO: Add regularization term to both linear regression and gradient descend
-    # make sure that we are not regularizing b (intercept), not the end of the world if we do
-    # though, maybe add an option to do that
     
-
     def __init__(self, x:np.array, y:np.array, iter:int, intercept:bool=False, lambda_:int=0.0) -> None:
         # Here x and y are the features and targets of the Training Set!
         self.x = x
@@ -395,9 +385,8 @@ class DecisionTreeClassifier:
         # Last element of the tuple of the tree contains a flag to know whether
         # the node is a leaf or not. In case it is, update our dictionary with the
         # predicted values
-        if self.tree[node][-1]:
-            
-
+        #if self.tree[node][-1]:
+        
         feature_split = self.tree[node][2]
         left_arr,right_arr = self._split_dataset(x=x, selected_idxs=range(x.shape[0]), feature_idx=feature_split)
 
@@ -408,12 +397,3 @@ class DecisionTreeClassifier:
         # a leaf, we can say what's the probability that
         # a given element within that group is a given category.
         # If the prob is > 0.5 then we label it as positive
-
-        
-
-
-
-# Create a randomforestclassifier
-#class RandomForestClassifier:
-#    def __init__(self) -> None:
-#        
