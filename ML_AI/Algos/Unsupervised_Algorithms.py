@@ -23,10 +23,10 @@ class K_means:
         # number of iterations
         self.iters = iters
 
-    def _compute_centroids(self, iter:int) -> List[List[float]]:
+    def _compute_centroids(self, c_map:dict) -> List[List[float]]:
         # The idea is to pick k random values as initial values
         # for the centroids
-        if iter==0:
+        if not c_map:
             random_idxs = np.random.random_integers(low=0, high=self.m-1, size=self.k)
             centroids = [self.x[idx] for idx in random_idxs]
 
@@ -35,9 +35,9 @@ class K_means:
             # If we are not on the first iter, we need to compute the centroid as the mean
             # position of all data points assigned to that cluster. We first need to assign
             # points to clusters
-
-
-
+            centroids = []
+            for values in c_map.values:
+                centroids.append(np.mean(self.x[values], axis=0))
 
         return centroids
     
@@ -70,14 +70,14 @@ class K_means:
     
     def compute_clusters(self) -> np.array:
         for rand_it in range(self.iters):
-            i = 0
             cost = float("inf")
             min_cost_log = [cost]
             cost_log = []
-            while i==0 or cost!=prev_cost:
+            centroids_points_map = {}
+            while not centroids_points_map or cost!=prev_cost:
                 prev_cost = cost    
                 # 1) Compute centroids
-                centroids = self._compute_centroids(i)
+                centroids = self._compute_centroids(centroids_points_map)
                 
                 # 2) Assign points to centroids
                 #    For each cluster centroid, we should have the list of indexes
