@@ -10,6 +10,7 @@ the aggregated orderbooks
 
 from typing import Tuple, Dict, Sequence
 import warnings
+from heapq import heapify,heappop
 
 # Why I am using a tuple instead of a list?
 # We do not need to modify the incoming order book
@@ -52,8 +53,7 @@ class orderbook:
         # orders
         self.active_orders = {}
     
-    def _selector(self) -> Dict:
-        side = self.update[1]
+    def _selector(self, side:str) -> Dict:
         if side=='b':
             return self.bid
         elif side=='a':
@@ -65,7 +65,7 @@ class orderbook:
     def _add_orderid(self, id:str) -> None:
         ts,side,price,qty = self.update[0],self.update[1],self.update[4],self.update[5]
         # check if price is in the ob
-        ob_side = self._selector()
+        ob_side = self._selector(side)
         if price not in ob_side:
             ob_side[price] = [qty,set(id)]
         else:
@@ -77,10 +77,13 @@ class orderbook:
             ob_side[price][1].add(id)
             
         print(f"Order_id={id} was added to side={side} with"
-              f"price={price} and quantity={qty}")            
+              f"price={price} and quantity={qty}")
+        # finally add the order to the dictionary of active orders
+        self.active_orders[id] = [price,qty]         
 
     def _remove_orderid(self, id:str) -> None:
-        ob_side = self._selector()
+        side = self.update[1]
+        ob_side = self._selector(side)
         price = self.update[4]
         vol = self.update[5]
         if price not in ob_side[price]:
@@ -92,22 +95,26 @@ class orderbook:
                                  f"order_id={id} is not, CHECK!")
             else:
                 ob_side[price][0] -= vol
-                ob_side[price][0].remove(id)
+                ob_side[price][1].remove(id)
                 if ob_side[price][0]==0:
                     # we should not have any order_id here
-                    if ob_side[price][0]:
+                    if ob_side[price][1]:
                         raise ValueError(f"there is no volume in this price={price} level "
-                                         f"but there are some order_ids={ob_side[price][0]}")
+                                         f"but there are some order_ids={ob_side[price][1]}")
                     else:
                         del ob_side[price]
                         warnings.warn(f"removing price={price} from orderbook")
+        
+        # Finally remove the order from the dictionary of active orders
+        del self.active_orders[id]
 
     def _modify_orderid(self, id:str, new_price:float, new_vol:int) -> None:
         if id not in self.active_orders:
             raise ValueError(f"order_id={id} wants to be modified but "
                              f"it's not in the list of active orders, CHECK!!")
         old_price,old_vol = self.active_orders[id]
-        ob_side = self._selector()
+        side = self.update[1]
+        ob_side = self._selector(side)
         if new_price==old_price and new_vol!=old_vol:
             # in this case we only need to modify the volume
             print(f"new_vol={new_vol}, old_vol={old_vol}, "
@@ -125,6 +132,8 @@ class orderbook:
                 ob_side[new_price][0] += new_vol
             else:
                 ob_side[new_price] = [new_vol,set(id)]
+            
+            self.active_orders[id] = [new_price,new_vol]
 
         else:
             raise ValueError("Price and volume have changed at the same time, check!")
@@ -141,18 +150,34 @@ class orderbook:
             case 'a':
                 # add_price_vol
                 self._add_orderid(id)
-                self.active_orders[id] = [price,qty]
             case 'd':
                 # go to the specific level where the order sits and removes it
                 self._remove_orderid(id)
-                del self.active_orders[id]
             case 'm':
                 # in case of a modification, according to the instructions
                 # either price or qty have changed, but not both.
                 self._modify_orderid(id,price,qty)
-
-                # find_ob_level(id:order_id) -> tuple(side,price)
-                # remove_vol_from_level(side,price,qty) -> None:
-                # add_vol_to_level(side,price,qty) -> None:
-
     
+    def generate_ob_view(self) -> Dict:
+
+        # Since we have to retrieve prices in sorted order,
+        # one quick way to do it is via a heap
+
+        ob_view = {}
+
+        for side in ['a','b']:
+            ob_side = self._selector(side)
+            price_vols = heapify([[price,val[0]] if ob_side=='a' else [-1*price,val[0]] for price,val in ob_side.items()])
+            i = 0
+            # this is limited to 5 as the instructions mention that we should only retrieve
+            # the first 5 levels of the orderbook
+            while i<5:
+                if price_vols:
+                    price,qty = heappop(price_vols)
+                    ob_view[f"{side}p{i}"] = price if price>0 else -1*price
+                    ob_view[f"{side}q{i}"] = qty
+                else:
+                    ob_view[f"{side}q{i}"] = 0
+                i += 1
+
+            print(f"order book view => {ob_view}")
