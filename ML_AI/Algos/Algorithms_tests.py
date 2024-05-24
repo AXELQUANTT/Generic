@@ -72,13 +72,13 @@ x_test = np.concatenate((np.array([x_e,y_n]).T,
                         np.array([x_w,y_n]).T,
                         np.array([x_w,y_s]).T))
 
-k_m = K_means(x=x_test,k=4,iters=500,max_iters=200)
+k_m = K_means(x=x_test,k=4,iters=1500,max_iters=500)
 cost_log,centroids,centroids_map = k_m.compute_clusters()
 # The ordering of the centroids is different in the two arrays
 # re-order centroids to make it match with sk_centroids
 centroids = np.sort(centroids, axis=0)
 
-sk_k_m = KMeans(n_clusters=4,n_init=500,max_iter=200).fit(x_test)
+sk_k_m = KMeans(n_clusters=4,n_init=1500,max_iter=500).fit(x_test)
 sk_centroids = np.sort(sk_k_m.cluster_centers_, axis=0)
 
 tests.append(Test(centroids,sk_centroids,0.01))
