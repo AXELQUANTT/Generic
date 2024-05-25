@@ -8,7 +8,7 @@ is devoted to create some alphas for
 the aggregated orderbooks
 """
 
-from typing import Tuple, Dict, Sequence
+from typing import Tuple, Sequence
 import warnings
 from heapq import heapify,heappop
 
@@ -53,7 +53,7 @@ class orderbook:
         # orders
         self.active_orders = {}
     
-    def _selector(self, side:str) -> Dict:
+    def _selector(self, side:str) -> dict:
         if side=='b':
             return self.bid
         elif side=='a':
@@ -158,7 +158,7 @@ class orderbook:
                 # either price or qty have changed, but not both.
                 self._modify_orderid(id,price,qty)
     
-    def generate_ob_view(self) -> Dict:
+    def generate_ob_view(self) -> dict:
 
         # Since we have to retrieve prices in sorted order,
         # one quick way to do it is via a heap
