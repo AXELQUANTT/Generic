@@ -8,7 +8,7 @@ is devoted to create some alphas for
 the aggregated orderbooks
 """
 
-from typing import Tuple, Sequence
+from typing import Tuple
 import warnings
 from heapq import heapify,heappop
 
@@ -45,6 +45,10 @@ ob_update = Tuple[int,#timestamp
 #ob_type = Dict[str,Dict[int,Sequence[float,int,set]]]
 
 class orderbook:
+    # TO-DO_1: Centralize all relevant fields (price, side, action, etc)
+    #           in one place
+
+
     def __init__(self) -> None:
         self.bid = {}
         self.ask = {}
@@ -69,14 +73,15 @@ class orderbook:
         if price not in ob_side:
             ob_side[price] = [qty,set(id)]
         else:
-            warnings.warn(f"order_id={id} with timestamp={ts} was added to side={side} "
-                          f"but it was already in the orderbook, seems weird!")
+            if id in ob_side[price][1]:
+                warnings.warn(f"order_id={id} with timestamp={ts} was added to side={side} "
+                            f"but it was already in the orderbook, seems weird!")
             # ALL THIS CODE ABOVE SHOULD BE NEVER REACHED BECAUSE AN ORDER THAT IS ALREADY IN
             # THE ORDERBOOK SHOULD NOT BE ADDED FOR A SECOND TIME.
             ob_side[price][0] += qty
             ob_side[price][1].add(id)
             
-        print(f"Order_id={id} was added to side={side} with"
+        print(f"Order_id={id} was added to side={side} with "
               f"price={price} and quantity={qty}")
         # finally add the order to the dictionary of active orders
         self.active_orders[id] = [price,qty]         
@@ -139,8 +144,8 @@ class orderbook:
             raise ValueError("Price and volume have changed at the same time, check!")
 
     
-    def process_update(self,update:str):# This should return the output that needs to be written to the csv
-        self.update = tuple(update.split(','))
+    def process_update(self,update:list):# This should return the output that needs to be written to the csv
+        self.update = tuple(update)
         action = self.update[2]
         id = self.update[3]
         price = self.update[4]
@@ -181,6 +186,8 @@ class orderbook:
                 i += 1
 
             print(f"order book view => {ob_view}")
+
+            return ob_view
 
 
 
