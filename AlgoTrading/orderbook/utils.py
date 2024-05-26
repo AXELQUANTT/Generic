@@ -44,14 +44,28 @@ ob_update = Tuple[int,#timestamp
 
 #ob_type = Dict[str,Dict[int,Sequence[float,int,set]]]
 
+# TO-DO: ??? Group all the printing/outputting functions ???
+# These functions are independent from the ob object on itself,
+# that is why is not a function of such class
+
+def generate_n_levels_labels() -> list[str]:
+    labels = []
+    for side in ['a','b']:
+        for i in range(5):
+            labels.extend([f'{side}p{i}',f'{side}q{i}'])
+    return labels
+
+def generate_header() -> list[str]:
+    header = ['timestamp','price','side']
+    header.extend(generate_n_levels_labels())
+    return header
+
 class orderbook:
     # TO-DO_1: Centralize all relevant fields (price, side, action, etc)
     #          in one place
     # TO-DO_2: Unify quantity/volume, in some places it is called qty
     #          in others volume
     # TO-DO_3: Create types for self.bid/self.ask
-    # TO-DO_4: Fix bug when printing the order book view, all quantities are = 0
-    #          and no prices are being distributed.
 
     def __init__(self) -> None:
         self.bid = {}
@@ -61,7 +75,7 @@ class orderbook:
         # orders
         self.active_orders = {}
 
-    def _format_input(self,in_line:List) -> ob_update:
+    def _format_input(self, in_line:List) -> ob_update:
         ts,side,action,id,price,volume = in_line
         # By default all fields are read as strings
         # Change those that are not strings
@@ -171,7 +185,7 @@ class orderbook:
         else:
             raise ValueError("Price and volume have changed at the same time, check!")
     
-    def process_update(self,update:list):# This should return the output that needs to be written to the csv
+    def process_update(self, update:list):# This should return the output that needs to be written to the csv
         self.update = self._format_input(update)
         action = self.update[2]
         id = self.update[3]
@@ -193,28 +207,46 @@ class orderbook:
         
         #print(f"ask={self.ask}")
         #print(f"bid={self.bid}")
+    def _quality_checks(self) -> None:
+        return None
     
     def generate_ob_view(self) -> dict:
 
-        # Since we have to retrieve prices in sorted order,
-        # one quick way to do it is via a heap
-        ob_view = {}
+        self.ob_view = {'timestamp':self.update[0],
+                        'price':self.update[4],
+                        'side':self.update[1]}
 
         for side in ['a','b']:
             ob_side = self._selector(side)
-            price_vols = heapify([[price,val[0]] if ob_side=='a' else [-1*price,val[0]] for price,val in ob_side.items()])
-            i = 0
+             # Since we have to retrieve prices in sorted order,
+            # one quick way to do it is via a heap
+            # Accessing min/max elements from a min/max heap is a O(1) operation
+            price_vols = [[price,val[0]] if side=='a' else [-1*price,val[0]] for price,val in ob_side.items()]
+            heapify(price_vols)
+            
             # this is limited to 5 as the instructions mention that we should only retrieve
             # the first 5 levels of the orderbook
+            i = 0
             while i<5:
                 if price_vols:
                     price,qty = heappop(price_vols)
-                    ob_view[f"{side}p{i}"] = price if price>0 else -1*price
-                    ob_view[f"{side}q{i}"] = qty
+                    self.ob_view[f"{side}p{i}"] = price if price>0 else -1*price
+                    self.ob_view[f"{side}q{i}"] = qty
                 else:
-                    ob_view[f"{side}q{i}"] = 0
+                    self.ob_view[f"{side}p{i}"] = None
+                    self.ob_view[f"{side}q{i}"] = 0
                 i += 1
 
-            #print(f"order book view => {ob_view}")
+        #print(f"order book view => {self.ob_view}")
+        
+        # Perform some quality checks to ensure the produced
+        # orderbook has the desired properties
+        #self._quality_checks()
 
-            return ob_view
+        # TO-DO: Generate current statistics we may need in part 2.
+
+        return self.ob_view
+    
+    def _format_output(self) -> list[str]:
+        values = [self.ob_view[label] for label in generate_header()]
+        return values
