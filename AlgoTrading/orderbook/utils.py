@@ -8,7 +8,7 @@ is devoted to create some alphas for
 the aggregated orderbooks
 """
 
-from typing import Tuple
+from typing import Tuple, List
 import warnings
 from heapq import heapify,heappop
 
@@ -46,8 +46,12 @@ ob_update = Tuple[int,#timestamp
 
 class orderbook:
     # TO-DO_1: Centralize all relevant fields (price, side, action, etc)
-    #           in one place
-
+    #          in one place
+    # TO-DO_2: Unify quantity/volume, in some places it is called qty
+    #          in others volume
+    # TO-DO_3: Create types for self.bid/self.ask
+    # TO-DO_4: Fix bug when printing the order book view, all quantities are = 0
+    #          and no prices are being distributed.
 
     def __init__(self) -> None:
         self.bid = {}
@@ -56,6 +60,17 @@ class orderbook:
         # this dictionary keeps track of the current active
         # orders
         self.active_orders = {}
+
+    def _format_input(self,in_line:List) -> ob_update:
+        ts,side,action,id,price,volume = in_line
+        # By default all fields are read as strings
+        # Change those that are not strings
+        ts = int(ts)
+        id = int(id)
+        price = float(price)
+        volume = int(volume)
+
+        return ts,side,action,id,price,volume
     
     def _selector(self, side:str) -> dict:
         if side=='b':
@@ -71,18 +86,18 @@ class orderbook:
         # check if price is in the ob
         ob_side = self._selector(side)
         if price not in ob_side:
-            ob_side[price] = [qty,set(id)]
+            ob_side[price] = [qty,set([id])]
         else:
-            if id in ob_side[price][1]:
-                warnings.warn(f"order_id={id} with timestamp={ts} was added to side={side} "
-                            f"but it was already in the orderbook, seems weird!")
+            #if id in ob_side[price][1]:
+                #warnings.warn(f"order_id={id} with timestamp={ts} was added to side={side} "
+                #            f"but it was already in the orderbook, seems weird!")
             # ALL THIS CODE ABOVE SHOULD BE NEVER REACHED BECAUSE AN ORDER THAT IS ALREADY IN
             # THE ORDERBOOK SHOULD NOT BE ADDED FOR A SECOND TIME.
             ob_side[price][0] += qty
             ob_side[price][1].add(id)
             
-        print(f"Order_id={id} was added to side={side} with "
-              f"price={price} and quantity={qty}")
+        #print(f"Order_id={id} was added to side={side} with "
+        #      f"price={price} and quantity={qty}")
         # finally add the order to the dictionary of active orders
         self.active_orders[id] = [price,qty]         
 
@@ -91,8 +106,8 @@ class orderbook:
         ob_side = self._selector(side)
         price = self.update[4]
         vol = self.update[5]
-        if price not in ob_side[price]:
-            raise ValueError(f"order_id={id} is deleted but that price={price} "
+        if price not in ob_side:
+            raise ValueError(f"order_id={id} is deleted from side={side} but that price={price} "
                              f"was never in the orderbook")
         else:
             if id not in ob_side[price][1]:
@@ -101,15 +116,20 @@ class orderbook:
             else:
                 ob_side[price][0] -= vol
                 ob_side[price][1].remove(id)
+                
+                # Check that volumes are never negative
+                if ob_side[price][0]<0:
+                    raise ValueError(f"side={side}, price={price} has negative volume, vol={ob_side[price][0]}")
+                
                 if ob_side[price][0]==0:
                     # we should not have any order_id here
                     if ob_side[price][1]:
-                        raise ValueError(f"there is no volume in this price={price} level "
+                        raise ValueError(f"there is no volume in this side={side}, price={price} "
                                          f"but there are some order_ids={ob_side[price][1]}")
                     else:
                         del ob_side[price]
-                        warnings.warn(f"removing price={price} from orderbook")
-        
+                        #warnings.warn(f"removing price={price} from orderbook")
+                
         # Finally remove the order from the dictionary of active orders
         del self.active_orders[id]
 
@@ -122,9 +142,16 @@ class orderbook:
         ob_side = self._selector(side)
         if new_price==old_price and new_vol!=old_vol:
             # in this case we only need to modify the volume
-            print(f"new_vol={new_vol}, old_vol={old_vol}, "
-                  f"level_vol += {new_vol-old_vol}")
+            #warnings.warn(f"new_vol={new_vol}, old_vol={old_vol}, "
+            #            f"level_vol += {new_vol-old_vol}")
             ob_side[old_price][0] += new_vol-old_vol
+            # Check that volumes are never negative
+            if ob_side[old_price][0]<0:
+                raise ValueError(f"side={side}, price={old_price} has negative " 
+                                 f"volume, vol={ob_side[old_price][0]}")
+            # only change the volume as price is the same
+            self.active_orders[id][1] = new_vol
+
         elif new_vol==old_vol and new_price!=old_price:
             # volume is the same, but price has changed
             # In that case we need to remove the volume from
@@ -138,19 +165,20 @@ class orderbook:
             else:
                 ob_side[new_price] = [new_vol,set(id)]
             
-            self.active_orders[id] = [new_price,new_vol]
+            # only change the price as the volume is the same
+            self.active_orders[id][0] = new_price
 
         else:
             raise ValueError("Price and volume have changed at the same time, check!")
-
     
     def process_update(self,update:list):# This should return the output that needs to be written to the csv
-        self.update = tuple(update)
+        self.update = self._format_input(update)
         action = self.update[2]
         id = self.update[3]
         price = self.update[4]
         qty = self.update[5]
 
+        #print(f"input command={update}")
         match action:
             case 'a':
                 # add_price_vol
@@ -162,12 +190,14 @@ class orderbook:
                 # in case of a modification, according to the instructions
                 # either price or qty have changed, but not both.
                 self._modify_orderid(id,price,qty)
+        
+        #print(f"ask={self.ask}")
+        #print(f"bid={self.bid}")
     
     def generate_ob_view(self) -> dict:
 
         # Since we have to retrieve prices in sorted order,
         # one quick way to do it is via a heap
-
         ob_view = {}
 
         for side in ['a','b']:
@@ -185,10 +215,6 @@ class orderbook:
                     ob_view[f"{side}q{i}"] = 0
                 i += 1
 
-            print(f"order book view => {ob_view}")
+            #print(f"order book view => {ob_view}")
 
             return ob_view
-
-
-
-# TO-DO: Start testing the code on a small sample of updates and check for bugs!
