@@ -23,9 +23,8 @@ ob_update = Tuple[int,#timestamp
                   # units, but in general it could be any floating point number
                   int, #quantity, number of shares/contracts
                   ]
-
-
-
+n_levels = 5
+price_tick = 5
 
 # what info I need to output?
 # timestamp of original update
@@ -51,13 +50,20 @@ ob_update = Tuple[int,#timestamp
 def generate_n_levels_labels() -> list[str]:
     labels = []
     for side in ['a','b']:
-        for i in range(5):
+        for i in range(n_levels):
             labels.extend([f'{side}p{i}',f'{side}q{i}'])
     return labels
+
+# TO-DO_1:  For now discard share imbalance as it contains more or less
+#           the same info as vol_imbalance
+def generate_ob_derived_metrics() -> list[str]:
+    return ['vol_imbalance','ba_spread','mid_price']
 
 def generate_header() -> list[str]:
     header = ['timestamp','price','side']
     header.extend(generate_n_levels_labels())
+    header.extend(generate_ob_derived_metrics())
+
     return header
 
 class orderbook:
@@ -66,6 +72,7 @@ class orderbook:
     # TO-DO_2: Unify quantity/volume, in some places it is called qty
     #          in others volume
     # TO-DO_3: Create types for self.bid/self.ask
+    # TO-DO_4: Add helper messages to functions to increase readability
 
     def __init__(self) -> None:
         self.bid = {}
@@ -210,6 +217,29 @@ class orderbook:
     def _quality_checks(self) -> None:
         return None
     
+    def _generate_statistics(self) -> None:
+        # bid/ask quantities will always be an integer, but to avoid 0/0 issues
+        # perform some checks
+        if self.ob_view['bq0']==self.ob_view['aq0']==0:
+            self.ob_view['vol_imbalance'] = 0
+            #self.ob_view['share_imbalance'] = 0
+        else:
+            vol_0_lvl = self.ob_view['bq0']+self.ob_view['aq0']
+            # volume imbalance => best_bid_vol-best_ask_vol/agg_best_vol
+            self.ob_view['vol_imbalance'] = (self.ob_view['bq0']-self.ob_view['aq0'])/vol_0_lvl
+            # share imbalance => shares_best_bid/(shares_best_bid+shares_best_ask)
+            #self.ob_view['share_imbalance'] = self.ob_view['bq0']/vol_0_lvl
+
+        # bid/ask prices can be None though, perfome checks:
+        if self.ob_view['ap0'] and self.ob_view['bp0']:
+            # bid/ask spread (in bps)
+            self.ob_view['ba_spread'] = 10000.0*(self.ob_view['ap0']-self.ob_view['bp0'])/self.ob_view['ap0']
+            # mid_price => 0.5*(best_ask+best_bid)
+            self.ob_view['mid_price'] = 0.5*(self.ob_view['ap0']+self.ob_view['bp0'])
+        else:
+            self.ob_view['ba_spread'] = None
+            self.ob_view['mid_price'] = None
+    
     def generate_ob_view(self) -> dict:
 
         self.ob_view = {'timestamp':self.update[0],
@@ -218,7 +248,7 @@ class orderbook:
 
         for side in ['a','b']:
             ob_side = self._selector(side)
-             # Since we have to retrieve prices in sorted order,
+            # Since we have to retrieve prices in sorted order,
             # one quick way to do it is via a heap
             # Accessing min/max elements from a min/max heap is a O(1) operation
             price_vols = [[price,val[0]] if side=='a' else [-1*price,val[0]] for price,val in ob_side.items()]
@@ -226,8 +256,8 @@ class orderbook:
             
             # this is limited to 5 as the instructions mention that we should only retrieve
             # the first 5 levels of the orderbook
-            i = 0
-            while i<5:
+            
+            for i in range(n_levels):
                 if price_vols:
                     price,qty = heappop(price_vols)
                     self.ob_view[f"{side}p{i}"] = price if price>0 else -1*price
@@ -235,16 +265,16 @@ class orderbook:
                 else:
                     self.ob_view[f"{side}p{i}"] = None
                     self.ob_view[f"{side}q{i}"] = 0
-                i += 1
+
+        #TO-DO: Perform some quality checks to ensure the produced
+        #       orderbook has the desired properties
+        #self._quality_checks()
+
+        # Add orderbook derived statistics to the view
+        self._generate_statistics()
 
         #print(f"order book view => {self.ob_view}")
         
-        # Perform some quality checks to ensure the produced
-        # orderbook has the desired properties
-        #self._quality_checks()
-
-        # TO-DO: Generate current statistics we may need in part 2.
-
         return self.ob_view
     
     def _format_output(self) -> list[str]:
