@@ -345,17 +345,20 @@ def run_lasso_regression(df:pd.DataFrame,
     lasso = linear_model.Lasso(alpha=alpha)
     lasso.fit(X=df[predictors], y=df[target])
     coefs = lasso.coef_
-    intercept = lasso.intercept_
+    intercepts = lasso.intercept_
     score = lasso.score(X=df[predictors], y=df[target])
 
-    return coefs,intercept,score
+    return coefs,intercepts,score
 
 def run_ols(df:pd.DataFrame,predictors:list[str],
             target:str) -> tuple[list[float],list[float],float]:
     
-    # TO-DO: Implement ordinary least square algorithm
-    
-    return None
+    lreg = linear_model.LinearRegression().fit(X=df[predictors],y=df[target])
+    coefs = lreg.coef_
+    intercepts = lreg.intercept_
+    score = lreg.score
+
+    return coefs,intercepts,score
 
 
 def prepare_for_regression() -> pd.DataFrame:
@@ -413,10 +416,10 @@ def run_regression(df:pd.DataFrame):
             if alpha_i==0.0:
                 # The way Lasso algorithm is implemented in sklearn
                 # does not ensure the convergence of gradient descent (its optimizer)
-                # when alpha=0.0. It is for this reason that we'll use the 
-                results[f'alph={alpha_i}, params={params_label}, target={tgt}'] = run_ols(df,pred,tgt)
+                # when alpha=0.0. It is for this reason that I am using s
+                results[f'alph={alpha_i}--params={params_label}--target={tgt}--'] = run_ols(df,pred,tgt)
             else:
-                results[f'alph={alpha_i}, params={params_label}, target={tgt}'] = run_lasso_regression(df,pred,tgt,alpha_i)
+                results[f'alph={alpha_i}--params={params_label}--target={tgt}'] = run_lasso_regression(df,pred,tgt,alpha_i)
 
     # Create a dataframe with the results
     print(results)
