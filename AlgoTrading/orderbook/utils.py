@@ -56,6 +56,7 @@ def generate_n_levels_labels() -> list[str]:
 
 # TO-DO_1:  For now discard share imbalance as it contains more or less
 #           the same info as vol_imbalance
+# TO-DO_2:  Should the bid/ask spread be normalized by the tick size?
 def generate_ob_derived_metrics() -> list[str]:
     return ['vol_imbalance','ba_spread','mid_price']
 
@@ -232,8 +233,8 @@ class orderbook:
 
         # bid/ask prices can be None though, perfome checks:
         if self.ob_view['ap0'] and self.ob_view['bp0']:
-            # bid/ask spread (in bps)
-            self.ob_view['ba_spread'] = 10000.0*(self.ob_view['ap0']-self.ob_view['bp0'])/self.ob_view['ap0']
+            # bid/ask spread (in multiples of price ticks)
+            self.ob_view['ba_spread'] = (self.ob_view['ap0']-self.ob_view['bp0'])/price_tick
             # mid_price => 0.5*(best_ask+best_bid)
             self.ob_view['mid_price'] = 0.5*(self.ob_view['ap0']+self.ob_view['bp0'])
         else:
