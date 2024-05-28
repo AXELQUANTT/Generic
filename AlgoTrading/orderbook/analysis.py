@@ -9,6 +9,7 @@ from the order book
 import csv
 import glob
 import matplotlib.pyplot as plt
+import numpy as np
 import os
 import pandas as pd
 import sys, importlib
@@ -62,30 +63,104 @@ def generate_orderbooks(path:str) -> None:
     end_time = time.time()
     print(f'Orderbooks were created in {round(end_time-start_time,2)} s')
 
-def compute_order_flow_imbalance(curr_update,prev_update) -> float:
+def compute_ofi_deltas(prev_update:pd.DataFrame,
+                       curr_update:pd.DataFrame,
+                       level:int=0) -> int:
+    """
+    Function devoted to compute the delta volumes for bid/ask prices
+    needed for the order flow imbalance
+    """
+    # For convenience the first element will be the delta_bid
+    # and the second element will be the delta_ask
+
+    delta_vol = {}
+    for side in ['b','a']:
+        
+        delta_vol[side] = 0
+        price_label = f"{side}p{level}"
+        vol_label = f"{side}q{level}"
+
+        if curr_update[price_label] > prev_update[price_label]:
+            delta_vol[side] = curr_update[vol_label]
+        
+        elif curr_update[price_label] == prev_update[price_label]:
+            delta_vol[side] = curr_update[vol_label]-prev_update[vol_label]
+        
+        else:
+            delta_vol[side] = -1*prev_update[vol_label]
+    
+    return delta_vol['b']-delta_vol['a']
+
+    
+
+def compute_ofi(df:pd.DataFrame, curr_ts:int, lookback:list[int]) -> dict[int,int]:
     # Makes sense that if we are trying to predict future
     # price moves, we use order_flow_imbalance metrics
     # over time intervals on the same scale than the forward window
-    None
     
+    """
+    Function devoted to compute order flow imbalance (OFI). Order flow imbalance
+    gives a measure not only about the intention of the participants in the
+    market (i.e whether there is more buying than selling interest) but also
+    about its magnitude.
 
+    OFI_t = Delta_Vol_Bid_t - Delta_Vol_Ask_t
+    
+    Delta_Vol of bid and ask are computed via compute_ofi_deltas
+    """
+    
+    # We'll create an array with OFI_t computed over 1ms intervals
+    max_lookback = max(lookback)
+    ofi_arr = []
+    prev_ts = curr_ts-max_lookback
+    prev_update = df.loc[df['timestamp']<=prev_ts,['aq0','ap0','bq0','bp0']].iloc[-1]
+    for i in range(1,max_lookback+1):
+        next_ts = prev_ts+1 
+        if next_ts in df['timestamp']:
+            next_update = df.loc[df['timestamp']==next_ts,['aq0','ap0','bq0','bp0']]
+        else:
+            # In case there was no update on the next ms
+            # keep the old update 
+            next_update = prev_update
 
-def generate_alphas_and_targets(df:pd.DataFrame, fw_window:int) -> pd.DataFrame:
+        ofi = compute_ofi_deltas(prev_update, next_update, 0)
+        ofi_arr.append(ofi)
+        
+        # update prev_ts and update
+        prev_update = next_update
+        prev_ts += 1
+    
+    # Generate multiple OFIs according to the different lookback periods
+    of_lb = {}
+    for lb in lookback:
+        of_lb[lb] = ofi_arr[:lb+1]
+
+    return of_lb
+
+def generate_alphas_and_targets(df:pd.DataFrame,
+                                lb_periods:list[int],
+                                fw_window:int) -> pd.DataFrame:
     """
     Function devoted to generate the target predictors
     and the alphas that will try to predict them
     
     forward_int: Mid price movement will be computed
                  over this interval (in ms)
-    """
 
-    #df.index = pd.DatetimeIndex(df['timestamp'])
-    #df.rolling().apply()
+    lb_periods: List containing the lookback periods
+    over which order flow imbalance information will
+    be computed
+    """
 
     #TO-D0: Time this logic, I bet it's quite slow,
     #       code it in Pandas way
 
-    alphas_targets = pd.DataFrame(index=df.index)
+    # Alphas_targets will be a dict of dicts, containing
+    # all the predictors and targets to predict. Later
+    # on, alphas_targets will be transformed into a df
+    # to merge it with the original one
+    alphas_targets = dict((idx,{}) for idx in df.index)
+
     for idx,row in df.iterrows():
         curr_mid = row['mid_price']
         curr_ts = row['timestamp']
@@ -94,9 +169,13 @@ def generate_alphas_and_targets(df:pd.DataFrame, fw_window:int) -> pd.DataFrame:
         fwd_mid = df.loc[df['timestamp']==fwd_ts,'mid_price']
 
         #TO-DO: Document why we are choosing the mid price change/tick_size and not
-        #       the mid price return for instance       
-        alphas_targets[idx,'mid_price_change'] = (fwd_mid-curr_mid)/price_tick
+        #       the mid price return for instance   
+        alphas_targets[idx]['mid_price_change'] = (fwd_mid-curr_mid)/price_tick
 
+        alphas_targets.update(compute_ofi(df,curr_ts,lb_periods))
+
+    
+    alphas_targets_df = pd.DataFrame.from_dict(alphas_targets,orient='index')
 
     return df
 
@@ -109,6 +188,12 @@ def subsample(df:pd.DataFrame, gr:str) -> pd.DataFrame:
     Sampling period could be larger than that, but not smaller
     """
     org_size = len(df)
+
+    # At this point data is aggregated by microseconds. What is the mean
+    # and median difference between updates though?
+    mean_diff = np.nanmean(df['timestamp'].diff())
+    median_diff = np.nanmedian(df['timestamp'].diff())
+
     match gr:
         case 'raw':
             return df
@@ -124,20 +209,23 @@ def subsample(df:pd.DataFrame, gr:str) -> pd.DataFrame:
     df['timestamp'] = df['timestamp'].astype(int)
     df = df.groupby(['timestamp']).last().reset_index()
 
-    df.head()
+    #df.head()
     #Issue. We have a period in which there are no updatest that lasts for quite a while
     #       We want our price data to be equally sampled
     #       When computing the prices, instead of adding rows, just get the closest
     #       value. Is there an issue if we have a lot of values for which the price
     #       has not changed?
-    #aux_ts = pd.DataFrame([ts for ts in range(max(df['timestamp'])+1)],columns=['timestamp'])
+    #equally_sampled_ts = [ts for ts in range(min(df['timestamp'])+250)]
+    #aux_ts = pd.DataFrame(equally_sampled_ts,columns=['timestamp'])
 
     #df_sampled = pd.merge(aux_ts,df,how='left',left_on='timestamp',right_on='timestamp')
     # For the sampling periods in which there were no updates, propagate the previous
     # update
     #df_sampled.ffill(inplace=True)
 
-    print(f"Orderbook size has been reduced by {round(1-len(df)/org_size,3)}")
+    #print(df_sampled.head())
+
+    #print(f"Orderbook size has been changed by {round(len(df_sampled)/org_size,3)}")
 
     return df
 
@@ -178,17 +266,19 @@ analyse_orderbook()
 
 # Part 2)
 # 2.1 Come up with a set of statistics that according to research
-#     have some sort of predicitive analysis
+#     have some sort of predicitive analysis => Done
 # 2.2 Calculate the predective features from the orderbooks of
 #     task 1.
 
 # 2.3 Create a prediction target that you think it would be
 #     useful for trading the product. The  most straightforward
-#     approach would be the 1m, 2m, 10m mid return
+#     approach would be the 1m, 2m, 10m mid return => Done
+
 #   2.4 Subsample data? Original updates are in microseconds since
 #       the opening of the session. For sure we want to
 #       aggregate all updates that happen in the same microsecond,
-#       but shall we subsample more?       
+#       but shall we subsample more? => Done
+       
 # 2.5 Perform Lasso on the subset of what we think are predictors
 #     of the mid return of the orderbook. For those features
 #     for which we have a coefficient very close to 0, we
