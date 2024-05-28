@@ -7,6 +7,7 @@ from the order book
 """
 
 import csv
+from sklearn import linear_model
 import glob
 import matplotlib.pyplot as plt
 import numpy as np
@@ -16,6 +17,7 @@ import sys, importlib
 import time
 from utils import orderbook,generate_header,price_tick
 importlib.reload(sys.modules['utils'])
+import warnings
 
 
 # TO-DO_1: Use command line options to run the script
@@ -63,8 +65,8 @@ def generate_orderbooks(path:str) -> None:
     end_time = time.time()
     print(f'Orderbooks were created in {round(end_time-start_time,2)} s')
 
-def compute_ofi_deltas(prev_update:pd.DataFrame,
-                       curr_update:pd.DataFrame,
+def compute_ofi_deltas(prev_update:pd.Series,
+                       curr_update:pd.Series,
                        level:int=0) -> int:
     """
     Function devoted to compute the delta volumes for bid/ask prices
@@ -72,24 +74,32 @@ def compute_ofi_deltas(prev_update:pd.DataFrame,
     """
     # For convenience the first element will be the delta_bid
     # and the second element will be the delta_ask
+    if prev_update.equals(curr_update):
+        return 0
+    else:
+        delta_vol = {}
+        for side in ['b','a']:
+            
+            delta_vol[side] = 0
+            price_label = f"{side}p{level}"
+            vol_label = f"{side}q{level}"
 
-    delta_vol = {}
-    for side in ['b','a']:
-        
-        delta_vol[side] = 0
-        price_label = f"{side}p{level}"
-        vol_label = f"{side}q{level}"
+            curr_price = curr_update[price_label]
+            curr_vol =  curr_update[vol_label]
+            
+            prev_price = prev_update[price_label]
+            prev_vol = prev_update[vol_label]
 
-        if curr_update[price_label] > prev_update[price_label]:
-            delta_vol[side] = curr_update[vol_label]
+            if curr_price > prev_price:
+                delta_vol[side] = curr_vol if side=='b' else -1*prev_vol
+            
+            elif curr_price == prev_price:
+                delta_vol[side] = curr_vol-prev_vol
+            
+            else:
+                delta_vol[side] = -1*prev_vol if side=='b' else curr_vol
         
-        elif curr_update[price_label] == prev_update[price_label]:
-            delta_vol[side] = curr_update[vol_label]-prev_update[vol_label]
-        
-        else:
-            delta_vol[side] = -1*prev_update[vol_label]
-    
-    return delta_vol['b']-delta_vol['a']
+        return delta_vol['b']-delta_vol['a']
 
     
 
@@ -111,29 +121,42 @@ def compute_ofi(df:pd.DataFrame, curr_ts:int, lookback:list[int]) -> dict[int,in
     
     # We'll create an array with OFI_t computed over 1ms intervals
     max_lookback = max(lookback)
-    ofi_arr = []
     prev_ts = curr_ts-max_lookback
-    prev_update = df.loc[df['timestamp']<=prev_ts,['aq0','ap0','bq0','bp0']].iloc[-1]
-    for i in range(1,max_lookback+1):
-        next_ts = prev_ts+1 
-        if next_ts in df['timestamp']:
-            next_update = df.loc[df['timestamp']==next_ts,['aq0','ap0','bq0','bp0']]
-        else:
-            # In case there was no update on the next ms
-            # keep the old update 
-            next_update = prev_update
-
-        ofi = compute_ofi_deltas(prev_update, next_update, 0)
-        ofi_arr.append(ofi)
-        
-        # update prev_ts and update
-        prev_update = next_update
-        prev_ts += 1
     
+    # Since we have different lookback periods, we'll retrieve NaNs for
+    # all the timestamps in which ANY of the lookback periods will be computed
+    # The reason behind this is to ensure that our population of predictors
+    # is equal in terms of size of valid values
+    prev_update = df.loc[df['timestamp']<=prev_ts,['aq0','ap0','bq0','bp0']]
     # Generate multiple OFIs according to the different lookback periods
     of_lb = {}
+    
+    if prev_update.empty:
+        warnings.warn(f'lookback periods can not be computed '
+                      f'for timestamp={curr_ts}')
+        ofi_arr = [np.nan]*max_lookback
+    else:
+        prev_update = prev_update.iloc[-1]
+        ofi_arr = []
+        # for i in range(1,max_lookback+1):
+        #     next_ts = prev_ts+1
+        #     if any(df['timestamp']==next_ts):
+        #         next_update = df.loc[df['timestamp']==next_ts,['aq0','ap0','bq0','bp0']].iloc[0]
+        #     else:
+        #         # In case there was no update on the next ms
+        #         # keep the old update 
+        #         next_update = prev_update
+
+        #     # OBSERVATION: THE ISSUE IS ON THE FOR LOOP, not on the computation of the OFI itself
+        #     ofi = compute_ofi_deltas(prev_update, next_update, 0)
+        #     ofi_arr.append(ofi)
+            
+        #     # # update prev_ts and update
+        #     prev_update = next_update
+        #     prev_ts += 1
+    
     for lb in lookback:
-        of_lb[lb] = ofi_arr[:lb+1]
+        of_lb[f"OFI_period({lb})"] = sum(ofi_arr[:lb+1])
 
     return of_lb
 
@@ -153,29 +176,48 @@ def generate_alphas_and_targets(df:pd.DataFrame,
     """
 
     #TO-D0: Time this logic, I bet it's quite slow,
-    #       code it in Pandas way
+    #       code it in Pandas way. It is, before 
+    #       the OFI computation it takes around 
 
     # Alphas_targets will be a dict of dicts, containing
     # all the predictors and targets to predict. Later
     # on, alphas_targets will be transformed into a df
     # to merge it with the original one
-    alphas_targets = dict((idx,{}) for idx in df.index)
 
+    start_time = time.time()
+    alphas_targets = dict((ts,{}) for ts in df['timestamp'])
     for idx,row in df.iterrows():
         curr_mid = row['mid_price']
         curr_ts = row['timestamp']
         
-        fwd_ts = df.loc[((df['timestamp'] >= curr_ts) & (df['timestamp'] <= curr_ts+fw_window)),'timestamp'].iloc[-1]
-        fwd_mid = df.loc[df['timestamp']==fwd_ts,'mid_price']
+        fwd_ts = df.loc[((df['timestamp'] >= curr_ts) & 
+                         (df['timestamp'] <= curr_ts+fw_window)),
+                        'timestamp'].iloc[-1]
+        fwd_mid = df.loc[df['timestamp']==fwd_ts,'mid_price'].iloc[0]
 
         #TO-DO: Document why we are choosing the mid price change/tick_size and not
-        #       the mid price return for instance   
-        alphas_targets[idx]['mid_price_change'] = (fwd_mid-curr_mid)/price_tick
+        #       the mid price return for instance
+        alphas_targets[curr_ts]['mid_price_change'] = (fwd_mid-curr_mid)/(0.5*price_tick)
 
-        alphas_targets.update(compute_ofi(df,curr_ts,lb_periods))
-
+        alphas_targets[curr_ts].update(compute_ofi(df,curr_ts,lb_periods))
+        print(f"Progress..{round(idx/len(df),5)}")
     
-    alphas_targets_df = pd.DataFrame.from_dict(alphas_targets,orient='index')
+    print(f"Computation time for alphas/targets={round(time.time()-start_time,3)}s")
+    
+    alphas_targets_df = pd.DataFrame.from_dict(alphas_targets,orient='index').reset_index()
+    alphas_targets_df.rename(columns={'index':'timestamp'},inplace=True)
+
+    # What is the mean and median difference between updates though?
+    mean_diff = np.nanmean(df['timestamp'].diff())
+    median_diff = np.nanmedian(df['timestamp'].diff())
+    print(f"mean_diff(ms)={mean_diff}, median_diff(ms)={median_diff}")
+
+    # Do some quality checks to ensure df and alphas_targets_df have the same
+    # timestamps
+    if set(df['timestamp'])!=set(alphas_targets_df['timestamp']):
+        raise ValueError('Data and target_predictors datasets do not ' 
+                         'have the same timestamps')
+    df = pd.merge(df, alphas_targets_df, left_on='timestamp', right_on='timestamp', how='left')
 
     return df
 
@@ -185,14 +227,9 @@ def subsample(df:pd.DataFrame, gr:str) -> pd.DataFrame:
     Gr: Defines the minimum granularity over which the
     data will be aggregated. It does not ensure that the
     output dataframe will have that sampling period.
-    Sampling period could be larger than that, but not smaller
+    Sampling period could be larger than that, but not smaller.
     """
     org_size = len(df)
-
-    # At this point data is aggregated by microseconds. What is the mean
-    # and median difference between updates though?
-    mean_diff = np.nanmean(df['timestamp'].diff())
-    median_diff = np.nanmedian(df['timestamp'].diff())
 
     match gr:
         case 'raw':
@@ -210,10 +247,11 @@ def subsample(df:pd.DataFrame, gr:str) -> pd.DataFrame:
     df = df.groupby(['timestamp']).last().reset_index()
 
     #df.head()
-    #Issue. We have a period in which there are no updatest that lasts for quite a while
-    #       We want our price data to be equally sampled
-    #       When computing the prices, instead of adding rows, just get the closest
-    #       value. Is there an issue if we have a lot of values for which the price
+    #Issue. We have a period in which there are no updatest that 
+    #       lasts for quite a while We want our price data to be
+    #       equally sampled When computing the prices, instead of
+    #       adding rows, just get the closest value. Is there an
+    #       issue if we have a lot of values for which the price
     #       has not changed?
     #equally_sampled_ts = [ts for ts in range(min(df['timestamp'])+250)]
     #aux_ts = pd.DataFrame(equally_sampled_ts,columns=['timestamp'])
@@ -228,6 +266,33 @@ def subsample(df:pd.DataFrame, gr:str) -> pd.DataFrame:
     #print(f"Orderbook size has been changed by {round(len(df_sampled)/org_size,3)}")
 
     return df
+
+def run_lasso_regression(df:pd.DataFrame,
+                         predictors:list[str],
+                         target:str,
+                         alpha:float=1.0) -> tuple[list[float],list[float],float]:
+    """
+    Functiond devoted to compute Lasso linear
+    regression. 
+    
+    df: Input dataframe containing the predictors
+    , X, and the target to predict, y.
+
+    alpha: Parameter that modulates the 
+    strength of the regularization term 
+    of the regression. When alpha=0,
+    lasso regression is the usual OLS regression
+
+    """
+    
+    lasso = linear_model.Lasso(alpha=alpha)
+    lasso.fit(X=df[predictors], Y=df[target])
+    coefs = lasso.coef_
+    intercept = lasso.intercept_
+    score = lasso.score(X=df[predictors], Y=df[target])
+
+    return coefs,intercept,score
+
 
 def analyse_orderbook() -> pd.DataFrame:
     # TO-DO: Read output orderbooks from command line option
@@ -244,10 +309,17 @@ def analyse_orderbook() -> pd.DataFrame:
         #       Lasso regression.
 
         # TO-DO: Pass sampling period as a command line argument
-        ob_sampled = subsample(ob,'miliseconds')
+        ob_sampled = subsample(ob,'seconds')
 
-        # TO-DO: Pass window size as a command line argument
-        generate_alphas_and_targets(ob_sampled,10)
+        #TO-DO: Pass fw_window and lb_periods via command line arguments
+        #       so that user can modify them
+        ob_sampled = generate_alphas_and_targets(ob_sampled, lb_periods=[5,10,50],fw_window=10)
+
+
+        run_lasso_regression(ob_sampled)
+
+        print(ob_sampled) 
+
 
 
 path = '/home/axelbm23/Code/AlgoTrading/orderbook/codetest/res_*.csv'
