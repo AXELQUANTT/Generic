@@ -299,7 +299,6 @@ def subsample(df:pd.DataFrame, gr:str) -> pd.DataFrame:
     df['timestamp'] = df['timestamp'].astype(int)
     df = df.groupby(['timestamp']).last().reset_index()
 
-    df.head()
     #Issue. We have a period in which there are no updatest that 
     #       lasts for quite a while We want our price data to be
     #       equally sampled When computing the prices, instead of
@@ -345,20 +344,20 @@ def run_lasso_regression(df:pd.DataFrame,
     lasso = linear_model.Lasso(alpha=alpha)
     lasso.fit(X=df[predictors], y=df[target])
     coefs = lasso.coef_
-    intercepts = lasso.intercept_
+    intercept = lasso.intercept_
     score = lasso.score(X=df[predictors], y=df[target])
 
-    return coefs,intercepts,score
+    return coefs,intercept,score
 
 def run_ols(df:pd.DataFrame,predictors:list[str],
             target:str) -> tuple[list[float],list[float],float]:
     
-    lreg = linear_model.LinearRegression().fit(X=df[predictors],y=df[target])
+    lreg = linear_model.LinearRegression().fit(X=df[predictors], y=df[target])
     coefs = lreg.coef_
-    intercepts = lreg.intercept_
-    score = lreg.score
+    intercept = lreg.intercept_
+    score = lreg.score(X=df[predictors], y=df[target])
 
-    return coefs,intercepts,score
+    return coefs,intercept,score
 
 
 def prepare_for_regression() -> pd.DataFrame:
@@ -389,6 +388,22 @@ def prepare_for_regression() -> pd.DataFrame:
     
     return pd.concat(formatted_files)
 
+def format_regression_results(results:dict, predictors:list[str]) -> pd.DataFrame:
+    """
+    Function that performs data wrangling over the result of
+    the regression analysis and produces a readable dataframe
+    """
+    results_df = pd.DataFrame.from_dict(results, orient='index')
+    predictors_labels = [f'coef_{label}' for label in predictors]
+    results_df[predictors_labels] =  results_df[0].apply(lambda x: pd.Series(x))
+    # Remove the auxiliary column 0
+    results_df.drop(0,axis=1,inplace=True)
+
+    results_df.reset_index(inplace=True)
+    results_df.rename(columns={'index':'settings', 1:'intercept',2:'r_square'},inplace=True)
+
+    return results_df
+
 def run_regression(df:pd.DataFrame):
     """
     df: input dataframe containing all predictors and target quantities
@@ -408,26 +423,28 @@ def run_regression(df:pd.DataFrame):
     print(f'Dataset has been reduced by '
           f'{round(100.0*(1.0-len(df)/org_size),3)}% '
           f'after NaN treatment')
+    
+    # TO-DO: Check range of variables
 
     results = {}
     for tgt in target:
+        tgt_label = tgt.split('_')[-1]
         for alpha_i in args.alphas:
-            params_label = f'lb_periods=({"_".join([str(x) for x in args.lb_periods])})'
+            params_label = "_".join([str(x) for x in args.lb_periods])
             if alpha_i==0.0:
                 # The way Lasso algorithm is implemented in sklearn
                 # does not ensure the convergence of gradient descent (its optimizer)
-                # when alpha=0.0. It is for this reason that I am using s
-                results[f'alph={alpha_i}--params={params_label}--target={tgt}--'] = run_ols(df,pred,tgt)
+                # when alpha=0.0. It is for this reason that I am using
+                # LinearRegression from sklearn to compute the regression
+                results[(alpha_i,params_label,tgt_label)] = run_ols(df,pred,tgt)
             else:
-                results[f'alph={alpha_i}--params={params_label}--target={tgt}'] = run_lasso_regression(df,pred,tgt,alpha_i)
+                results[(alpha_i,params_label,tgt_label)] = run_lasso_regression(df,pred,tgt,alpha_i)
 
     # Create a dataframe with the results
-    print(results)
-    results_df = pd.DataFrame.from_dict(results, orient='index')
+    results_df = format_regression_results(results,pred)
 
-    return results
+    return results_df
 
-    
 
 #def create_signal()
     # TO-DO: Create signal out of the predictors that seem to have explanatory power.
@@ -437,15 +454,15 @@ parser = argparse.ArgumentParser(prog='Orderbook analyzer',
 parser.add_argument('-path', help = 'Absolute path containing the input files',
                     type = str, default = '/home/axelbm23/Code/AlgoTrading/orderbook/codetest/res_*.csv')
 parser.add_argument('-fw_periods', help = 'Array containing the forward looking periods '
-                    'to compute mid price changes (in seconds)', nargs = '+',default = [1,2,5,10,60])
+                    'to compute mid price changes (in seconds)', nargs = '+',default = [1,2,5,10,60,300])
 parser.add_argument('-lb_periods', help = 'Array containing the backward looking periods, '
-                    'used to compute set of predictors (in seconds)', default = [2,5,10,15])
+                    'used to compute set of predictors (in seconds)', default = [2,5,10,15,60])
 parser.add_argument('-n_train', help = 'Number of files devoted to train our model (out of 5)',
                     type = int, default = 2)
 parser.add_argument('-levels', help = 'Array specifying which ob levels will be taken into account '\
-                    'to compute the order flow imbalance', nargs='+', default=[0])
+                    'to compute the order flow imbalance over', nargs='+', default=[0])
 parser.add_argument('-alphas', help= 'Regularization term used for the Lasso regression',
-                    type=str, nargs='+', default=[0.0,1.0])
+                    type=str, nargs='+', default=[0.0,0.5,1.0])
 args = parser.parse_args()
 
 #TO-DO: Add boolean command line argument to create orderbooks, even if they
@@ -454,9 +471,9 @@ args = parser.parse_args()
 
 generate_orderbooks()
 sampled = prepare_for_regression()
-reg_resuls = run_regression(sampled)
+reg_results = run_regression(sampled)
 
-
+print('aaa')
 # For now the paramerters of the analysis are:
 # granularity: over which the data is sampled, effect on end results should
 # be pretty low
