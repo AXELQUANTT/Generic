@@ -54,7 +54,7 @@ def generate_orderbooks(log:bool) -> None:
                         writer.writerow(line_to_write)
                 wf.close()
             rf.close()
-            print(f"Progress...{f_idx+1/len(files)}")
+            print(f"Progress...{(f_idx+1)/len(files)}")
     
     end_time = time.time()
     print(f'Orderbooks were created in {round(end_time-start_time,2)} s')
@@ -178,27 +178,14 @@ def generate_alphas_and_targets(df:pd.DataFrame,
     return df
 
 
-def subsample(df:pd.DataFrame, gr:str) -> pd.DataFrame:
+def subsample(df:pd.DataFrame, gr:float) -> pd.DataFrame:
     """
-    Gr: Defines the minimum granularity over which the
-    data will be aggregated. It does not ensure that the
-    output dataframe will have that sampling period.
-    Sampling period could be larger than that, but not smaller.
+    Gr: Defines the amount of seconds over which the data
+    will be aggregated.
     """
     org_size = len(df)
-
-    match gr:
-        case 'raw':
-            return df
-        case 'microseconds':
-            None
-        case 'miliseconds':
-            df['timestamp'] = df['timestamp']/1_000
-        case 'deciseconds':
-            df['timestamp'] = df['timestamp']*100/1_000
-        case 'seconds':
-            df['timestamp'] = df['timestamp']/1_000_000
-    
+    resolution = gr*1_000_000
+    df['timestamp'] = df['timestamp']//resolution
     df['timestamp'] = df['timestamp'].astype(int)
     df = df.groupby(['timestamp']).last().reset_index()
 
@@ -282,7 +269,7 @@ def prepare_for_regression() -> pd.DataFrame:
 
         # TO-DO: Pass sampling period as a command line argument?? Not sure
         # I want to allow this
-        ob_sampled = subsample(ob,'seconds')
+        ob_sampled = subsample(ob,1.0)
 
         ob_sampled = generate_alphas_and_targets(ob_sampled, lb_periods=args.lb_periods,
                                                  fw_window=args.fw_periods, levels=args.levels)
@@ -352,10 +339,6 @@ def run_regression(df:pd.DataFrame) -> pd.DataFrame:
     results_df.to_csv(f'{args.output_path}/Regression_statistics.csv')
 
     return results_df
-
-
-#def create_signal()
-    # TO-DO: Create signal out of the predictors that seem to have explanatory power.
 
 parser = argparse.ArgumentParser(prog='Orderbook analyzer',
                                  description='Package devoted to create and analyze orderbooks')
