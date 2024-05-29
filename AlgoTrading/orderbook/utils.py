@@ -214,10 +214,11 @@ class orderbook:
         return None
     
     def _generate_statistics(self) -> None:
-        # bid/ask quantities will always be an integer, but to avoid 0/0 issues
-        # perform some checks
+        # bid/ask quantities will always be an integer, 
+        # but it can be both quantities are 0, in which
+        # case vol_imbalance is not defined
         if self.ob_view['bq0']==self.ob_view['aq0']==0:
-            self.ob_view['vol_imbalance'] = 0
+            self.ob_view['vol_imbalance'] = None
         else:
             vol_0_lvl = self.ob_view['bq0']+self.ob_view['aq0']
             # volume imbalance => best_bid_vol-best_ask_vol/agg_best_vol
