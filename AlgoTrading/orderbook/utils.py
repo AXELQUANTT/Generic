@@ -47,11 +47,9 @@ def generate_n_levels_labels() -> list[str]:
             labels.extend([f'{side}p{i}',f'{side}q{i}'])
     return labels
 
-# TO-DO_1:  For now discard share imbalance as it contains more or less
-#           the same info as vol_imbalance
-# TO-DO_2:  Should the bid/ask spread be normalized by the tick size?
+
 def generate_ob_derived_metrics() -> list[str]:
-    return ['vol_imbalance','ba_spread','mid_price']
+    return ['mid_price']
 
 def generate_header() -> list[str]:
     header = ['timestamp','price','side']
@@ -214,24 +212,12 @@ class orderbook:
         return None
     
     def _generate_statistics(self) -> None:
-        # bid/ask quantities will always be an integer, 
-        # but it can be both quantities are 0, in which
-        # case vol_imbalance is not defined
-        if self.ob_view['bq0']==self.ob_view['aq0']==0:
-            self.ob_view['vol_imbalance'] = None
-        else:
-            vol_0_lvl = self.ob_view['bq0']+self.ob_view['aq0']
-            # volume imbalance => best_bid_vol-best_ask_vol/agg_best_vol
-            self.ob_view['vol_imbalance'] = (self.ob_view['bq0']-self.ob_view['aq0'])/vol_0_lvl
 
         # bid/ask prices can be None though, perfome checks:
         if self.ob_view['ap0'] and self.ob_view['bp0']:
-            # bid/ask spread (in multiples of price ticks)
-            self.ob_view['ba_spread'] = (self.ob_view['ap0']-self.ob_view['bp0'])/price_tick
             # mid_price => 0.5*(best_ask+best_bid)
             self.ob_view['mid_price'] = 0.5*(self.ob_view['ap0']+self.ob_view['bp0'])
         else:
-            self.ob_view['ba_spread'] = None
             self.ob_view['mid_price'] = None
     
     def generate_ob_view(self) -> dict:
