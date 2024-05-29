@@ -189,12 +189,6 @@ def subsample(df:pd.DataFrame, gr:float) -> pd.DataFrame:
     df['timestamp'] = df['timestamp'].astype(int)
     df = df.groupby(['timestamp']).last().reset_index()
 
-    #Issue. We have a period in which there are no updatest that 
-    #       lasts for quite a while We want our price data to be
-    #       equally sampled When computing the prices, instead of
-    #       adding rows, just get the closest value. Is there an
-    #       issue if we have a lot of values for which the price
-    #       has not changed?
     equally_sampled_ts = [ts for ts in range(max(df['timestamp'])+1)]
     aux_ts = pd.DataFrame(equally_sampled_ts,columns=['timestamp'])
 
@@ -205,7 +199,7 @@ def subsample(df:pd.DataFrame, gr:float) -> pd.DataFrame:
 
     print(df_sampled.head())
 
-    print(f"Orderbook size has been changed by {round(len(df_sampled)/org_size - 1,3)}")
+    print(f"Orderbook size has been changed by {round(len(df_sampled)/org_size,3)}")
 
     return df_sampled
 
@@ -375,35 +369,6 @@ reg_results = run_regression(sampled_train)
 #       Comment on the poor performance of our predictions
 #       so far, with the best approach getting a 5% r_square
 #       in the future returns
-
-
-
-# For now the paramerters of the analysis are:
-# granularity: over which the data is sampled, effect on end results should
-# be pretty low
-# foward_window: Can have more of an impactful effect on end result 
-
-# Part 2)
-# 2.1 Come up with a set of statistics that according to research
-#     have some sort of predicitive analysis => Done
-# 2.2 Calculate the predective features from the orderbooks of
-#     task 1. => Done
-
-# 2.3 Create a prediction target that you think it would be
-#     useful for trading the product. The  most straightforward
-#     approach would be the 1m, 2m, 10m mid return => Done
-
-#   2.4 Subsample data? Original updates are in microseconds since
-#       the opening of the session. For sure we want to
-#       aggregate all updates that happen in the same microsecond,
-#       but shall we subsample more? => Done
-       
-# 2.5 Perform Lasso on the subset of what we think are predictors
-#     of the mid return of the orderbook. For those features
-#     for which we have a coefficient very close to 0, we
-#     can then infer that are not very relevant, so we can effectively
-#     remove them from our model
-
 
 # GUIDELINE FOR THE RESEARCH
 #1) Play with the forward return, the lookback periods
