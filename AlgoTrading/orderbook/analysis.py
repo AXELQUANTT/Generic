@@ -8,40 +8,34 @@ from the order book
 
 import argparse
 import csv
-from sklearn import linear_model
 import glob
-import matplotlib.pyplot as plt
-import numpy as np
 import os
 import pandas as pd
+from sklearn import linear_model
+from sklearn.model_selection import train_test_split
 import sys, importlib
 import time
 from utils import orderbook,generate_header,price_tick
 importlib.reload(sys.modules['utils'])
-import warnings
 
 
-# TO-DO_1: Use command line options to run the script
 # TO_DO_2: Re-organize/refactorize code in 
 #          generate_orderbooks function
-# TO_DO_3: Deal with in/out files in a better way. Probably
-#          better to create an output folder storing the
-#          ob files
 
 def create_output_folder() -> None:
     # TO-DO: Create output folder according to command line option
     if not os.path.isdir('generated_ob'):
         os.mkdir('generated_ob')
 
-def generate_orderbooks() -> None:
-    print("starting construction of orderbooks...")
+def generate_orderbooks(log:bool) -> None:
+    print("Starting construction of orderbooks...")
     start_time = time.time()
     files = glob.glob(args.path)
-    if os.listdir('generated_ob')==[]:
+    if os.listdir('generated_ob')==[] or args.regenerate_ob:
         create_output_folder()
         for f_idx,file in enumerate(files):
             # Clear the orderbook for each file (deleting all orders from the orderbook)
-            ob = orderbook()
+            ob = orderbook(log_warnings=log)
             # Create the corresponding output file
             full_path = file.split('/')
             out_file = f"{'/'.join(full_path[:-2])}/generated_ob/out_{full_path[-1].split('_')[-1]}"
@@ -56,12 +50,11 @@ def generate_orderbooks() -> None:
                     for _,line in enumerate(reader):
                         ob.process_update(line)
                         ob.generate_ob_view()
-                        line_to_write = ob._format_output()
+                        line_to_write = ob.format_output()
                         writer.writerow(line_to_write)
                 wf.close()
             rf.close()
-            
-        print(f"Progress...{f_idx+1/len(files)}")
+            print(f"Progress...{f_idx+1/len(files)}")
     
     end_time = time.time()
     print(f'Orderbooks were created in {round(end_time-start_time,2)} s')
@@ -102,66 +95,7 @@ def compute_ofi_deltas(prev_update:pd.Series,
         
         return delta_vol['b']-delta_vol['a']
 
-    
-
-def compute_ofi(df:pd.DataFrame, curr_ts:int, lookback:list[int]) -> dict[int,int]:
-    # Makes sense that if we are trying to predict future
-    # price moves, we use order_flow_imbalance metrics
-    # over time intervals on the same scale than the forward window
-    
-    """
-    Function devoted to compute order flow imbalance (OFI). Order flow imbalance
-    gives a measure not only about the intention of the participants in the
-    market (i.e whether there is more buying than selling interest) but also
-    about its magnitude.
-
-    OFI_t = Delta_Vol_Bid_t - Delta_Vol_Ask_t
-    
-    Delta_Vol of bid and ask are computed via compute_ofi_deltas
-    """
-    
-    # We'll create an array with OFI_t computed over the sampling interval
-    max_lookback = max(lookback)
-    prev_ts = curr_ts-max_lookback
-    
-    # Since we have different lookback periods, we'll retrieve NaNs for
-    # all the timestamps in which ANY of the lookback periods will be computed
-    # The reason behind this is to ensure that our population of predictors
-    # is equal in terms of size of valid values
-    prev_update = df.loc[df['timestamp']<=prev_ts,['bp0','ap0','bq0','aq0']]
-    # Generate multiple OFIs according to the different lookback periods
-    of_lb = {}
-    
-    if prev_update.empty:
-        warnings.warn(f'lookback periods can not be computed '
-                      f'for timestamp={curr_ts}')
-        ofi_arr = [np.nan]*max_lookback
-    else:
-        prev_update = prev_update.iloc[-1]
-        ofi_arr = []
-        for i in range(1,max_lookback+1):
-            next_ts = prev_ts+1
-            if any(df['timestamp']==next_ts):
-                next_update = df.loc[df['timestamp']==next_ts,['bp0','ap0','bq0','aq0']].iloc[0]
-            else:
-                # In case there was no update on the next ms
-                # keep the old update 
-                next_update = prev_update
-
-            # OBSERVATION: THE ISSUE IS ON THE FOR LOOP, not on the computation of the OFI itself
-            ofi = compute_ofi_deltas(prev_update, next_update, 0)
-            ofi_arr.append(ofi)
-        
-            # update prev_ts and update
-            prev_update = next_update
-            prev_ts += 1
-    
-    for lb in lookback:
-        of_lb[f"OFI_period({lb})"] = sum(ofi_arr[:lb+1])
-
-    return of_lb
-
-def compute_ofi_nice(df:pd.DataFrame, levels:int) -> int:
+def compute_ofi(df:pd.DataFrame, levels:int) -> int:
         
         """
         Function devoted to compute order flow imabalance
@@ -221,16 +155,17 @@ def generate_alphas_and_targets(df:pd.DataFrame,
     start_time = time.time()
 
     # First compute the variable to be predicted
-    # Which will be the future returns specified by the user via
-    # args.fwd_period 
-    
     for fwd in fw_window:
+        # Note the negative side in -fwd because
+        # it's a forward looking quantity, movement
+        # in ticks in this case
         shifted_mids = df['mid_price'].shift(-fwd)
         df[f'fut_price_change_{fwd}'] = (shifted_mids-df['mid_price'])/(0.5*price_tick)
     
-    df = compute_ofi_nice(df,levels)
+    df = compute_ofi(df,levels)
 
-    # Compute order flow imbalance information for the periods specified in lb_periods
+    # Compute order flow imbalance information for the periods
+    # specified in lb_periods
     for level in levels:
         for lb in lb_periods:
             # In order to compute OFI for each period, we have to first compute OFI
@@ -238,39 +173,7 @@ def generate_alphas_and_targets(df:pd.DataFrame,
             # just the sum of the individual OFI
             df[f'OFI_{lb}_lvl_{level}'] = df[f'OFI_lvl_{level}'].rolling(lb).sum()
     
-
-    # for idx,row in df.iterrows():
-    #     curr_mid = row['mid_price']
-    #     curr_ts = row['timestamp']
-        
-    #     fwd_ts = df.loc[((df['timestamp'] >= curr_ts) & 
-    #                      (df['timestamp'] <= curr_ts+fw_window)),
-    #                     'timestamp'].iloc[-1]
-    #     fwd_mid = df.loc[df['timestamp']==fwd_ts,'mid_price'].iloc[0]
-
-    #     #TO-DO: Document why we are choosing the mid price change/tick_size and not
-    #     #       the mid price return for instance
-    #     alphas_targets[curr_ts]['mid_price_change'] = (fwd_mid-curr_mid)/(0.5*price_tick)
-
-    #     alphas_targets[curr_ts].update(compute_ofi(df,curr_ts,lb_periods))
-    #     print(f"Progress..{round(idx/len(df),5)}")
-    
     print(f"Computation time for alphas/targets={round(time.time()-start_time,3)}s")
-    
-    #alphas_targets_df = pd.DataFrame.from_dict(alphas_targets,orient='index').reset_index()
-    #alphas_targets_df.rename(columns={'index':'timestamp'},inplace=True)
-
-    # What is the mean and median difference between updates though?
-    #mean_diff = np.nanmean(df['timestamp'].diff())
-    #median_diff = np.nanmedian(df['timestamp'].diff())
-    #print(f"mean_diff(ms)={mean_diff}, median_diff(ms)={median_diff}")
-
-    # Do some quality checks to ensure df and alphas_targets_df have the same
-    # timestamps
-    #if set(df['timestamp'])!=set(alphas_targets_df['timestamp']):
-    #    raise ValueError('Data and target_predictors datasets do not ' 
-    #                     'have the same timestamps')
-    #df = pd.merge(df, alphas_targets_df, left_on='timestamp', right_on='timestamp', how='left')
 
     return df
 
@@ -315,7 +218,7 @@ def subsample(df:pd.DataFrame, gr:str) -> pd.DataFrame:
 
     print(df_sampled.head())
 
-    print(f"Orderbook size has been changed by {round(len(df_sampled)/org_size,3)}")
+    print(f"Orderbook size has been changed by {round(len(df_sampled)/org_size - 1,3)}")
 
     return df_sampled
 
@@ -337,8 +240,8 @@ def run_lasso_regression(df:pd.DataFrame,
 
     """
     # TO-D0: Before performing any regression,
-    # make sure that the range of predictory
-    # variables is similar. If not, 
+    # make sure that the ranges of predictory
+    # variables are similar. If not, 
     # perform some regularization
     
     lasso = linear_model.Lasso(alpha=alpha)
@@ -361,7 +264,6 @@ def run_ols(df:pd.DataFrame,predictors:list[str],
 
 
 def prepare_for_regression() -> pd.DataFrame:
-    # TO-DO: Read output orderbooks from command line option
     ob_files = glob.glob(f'{"/".join(args.path.split("/")[:-2])}/generated_ob/out*.csv')
     formatted_files = []
     for file in ob_files:
@@ -404,14 +306,19 @@ def format_regression_results(results:dict, predictors:list[str]) -> pd.DataFram
 
     return results_df
 
-def run_regression(df:pd.DataFrame):
+def run_regression(df:pd.DataFrame) -> pd.DataFrame:
     """
+    This function is devoted to generate a set of statistics to determine
+    which of the regressive models delivers the better results.
+    In order to do so, an output csv will be generated with all
+    the desired statistics
+
     df: input dataframe containing all predictors and target quantities
     alpha: parameter controlling the stength of the regularization
     predictors: list of labels to try to predict target
     target: future quantity that needs to be predicted
     """
-    
+
     pred = ['vol_imbalance','ba_spread']
     pred.extend([f'OFI_lvl_{lvl}' for lvl in args.levels])
     pred.extend([f'OFI_{lb}_lvl_{lvl}' for lb in args.lb_periods for lvl in args.levels])
@@ -440,8 +347,9 @@ def run_regression(df:pd.DataFrame):
             else:
                 results[(alpha_i,params_label,tgt_label)] = run_lasso_regression(df,pred,tgt,alpha_i)
 
-    # Create a dataframe with the results
+    # Create a dataframe with the results and save it via a csv file
     results_df = format_regression_results(results,pred)
+    results_df.to_csv(f'{args.output_path}/Regression_statistics.csv')
 
     return results_df
 
@@ -453,27 +361,40 @@ parser = argparse.ArgumentParser(prog='Orderbook analyzer',
                                  description='Package devoted to create and analyze orderbooks')
 parser.add_argument('-path', help = 'Absolute path containing the input files',
                     type = str, default = '/home/axelbm23/Code/AlgoTrading/orderbook/codetest/res_*.csv')
+parser.add_argument('-regenerate_ob', help = 'If true script will regenerate the orderbooks from scratch, else '
+                    'it will try to load them', type=bool, default=False)
 parser.add_argument('-fw_periods', help = 'Array containing the forward looking periods '
-                    'to compute mid price changes (in seconds)', nargs = '+',default = [1,2,5,10,60,300])
+                    'to compute mid price changes (in seconds)', nargs = '+', default = [1,5,10,60,300,600])
 parser.add_argument('-lb_periods', help = 'Array containing the backward looking periods, '
-                    'used to compute set of predictors (in seconds)', default = [2,5,10,15,60])
-parser.add_argument('-n_train', help = 'Number of files devoted to train our model (out of 5)',
-                    type = int, default = 2)
+                    'used to compute set of predictors (in seconds)', default = [5,10,60,300,600])
+parser.add_argument('-train_size', help = 'Percentage of data devoted to train the model',
+                    type = float, default = 0.7)
 parser.add_argument('-levels', help = 'Array specifying which ob levels will be taken into account '\
                     'to compute the order flow imbalance over', nargs='+', default=[0])
 parser.add_argument('-alphas', help= 'Regularization term used for the Lasso regression',
-                    type=str, nargs='+', default=[0.0,0.5,1.0])
+                    type=str, nargs='+', default=[0.0,0.2,0.4,0.6,0.8,1.0])
+parser.add_argument('-output_path', help='Absolute path where the results of the regressions'\
+                    'will be stored', type=str,default='/home/axelbm23/Code/AlgoTrading/orderbook/')
+parser.add_argument('-ob_logger', help='If True, the script will print lots debugging information '\
+                    'for the orderbook creation part', type=bool, default=False)
 args = parser.parse_args()
 
-#TO-DO: Add boolean command line argument to create orderbooks, even if they
-#       already exist in the output folder. If True, already created ob files
-#       will be read.
-
-generate_orderbooks()
+generate_orderbooks(args.ob_logger)
 sampled = prepare_for_regression()
-reg_results = run_regression(sampled)
 
-print('aaa')
+# Split the data set into train and cross validation
+# we use a random_state to make this split deterministic,
+# otherwise it is randomized
+sampled_train,sampled_test = train_test_split(sampled, train_size=args.train_size,random_state=10)
+reg_results = run_regression(sampled_train)
+
+# TO-DO: Include the regression stats in the zip file!
+#       Comment on the poor performance of our predictions
+#       so far, with the best approach getting a 5% r_square
+#       in the future returns
+
+
+
 # For now the paramerters of the analysis are:
 # granularity: over which the data is sampled, effect on end results should
 # be pretty low
@@ -502,7 +423,8 @@ print('aaa')
 
 
 # GUIDELINE FOR THE RESEARCH
-#1) Play with the amount of 
+#1) Play with the forward return, the lookback periods
+#   and the regularization parameter
 
 
 
