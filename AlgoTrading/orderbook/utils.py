@@ -21,35 +21,14 @@ from typing import Tuple, List
 import warnings
 
 
-# Why I am using a tuple instead of a list?
-# We do not need to modify the incoming order book
-# updates, so I've choosen it as a immutable data type
-ob_update = Tuple[int,#timestamp
-                  str,#side
-                  str,#action
-                  int,#id
-                  float,#price. From the data seems like lot size is 5 monetary
-                  # units, but in general it could be any floating point number
-                  int, #quantity, number of shares/contracts
-                  ]
+# Define some global variables
 n_levels = 5
 price_tick = 5
 
-# the orderbook type is a dictionary that contains
-# two keys, bid and ask.
-# Each bid/ask are on dictionaries on themselves
-# with keys integers from 0 to n, where n is the number of distinct
-# prices in that side of the orderbook. Their values
-# are lists of three elements, containing the price at that level
-# the aggregated volume on that level and a set containing the individual
-# order ids at that level.
-
-
-# TO-DO: ??? Group all the printing/outputting functions ???
-# These functions are independent from the ob object on itself,
-# that is why is not a function of such class
-
 def generate_n_levels_labels() -> list[str]:
+    """
+    Aux function to create orderbook levels labels
+    """
     labels = []
     for side in ['a','b']:
         for i in range(n_levels):
@@ -60,6 +39,10 @@ def generate_ob_derived_metrics() -> list[str]:
     return ['mid_price']
 
 def generate_header() -> list[str]:
+    """
+    Aux function to create df headers
+    """
+
     header = ['timestamp','price','side']
     header.extend(generate_n_levels_labels())
     header.extend(generate_ob_derived_metrics())
@@ -67,15 +50,22 @@ def generate_header() -> list[str]:
     return header
 
 def create_output_folder() -> None:
+    """
+    Auxiliary function to create output folder if not already created
+    """
     if not os.path.isdir('generated_ob'):
         os.mkdir('generated_ob')
 
 def generate_orderbooks(log:bool, path:str, regenerate_ob:bool) -> None:
+    """
+    Function that reads the input files and generates the orderbooks
+    """
+
     print("Starting construction of orderbooks...")
     start_time = time.time()
     files = glob.glob(path)
+    create_output_folder()  
     if os.listdir('generated_ob')==[] or regenerate_ob:
-        create_output_folder()
         for f_idx,file in enumerate(files):
             # Clear the orderbook for each file (deleting all orders from the orderbook)
             ob = orderbook(log_warnings=log)
@@ -103,14 +93,10 @@ def generate_orderbooks(log:bool, path:str, regenerate_ob:bool) -> None:
     print(f'Orderbooks were created in {round(end_time-start_time,3)} s')
 
 def compute_ofi(df:pd.DataFrame, levels:int) -> int:
-        
         """
         Function devoted to compute order flow imabalance
-        
-        df: Input dataframe
-        level: Specifies which levels the order flow information
-                will be computed on 
         """
+
         for level in levels:
             
             org_qties = [f'bp{level}',f'bq{level}',f'ap{level}',f'aq{level}']
@@ -141,18 +127,11 @@ def generate_alphas_and_targets(df:pd.DataFrame,
     """
     Function devoted to generate the target predictors
     and the alphas that will try to predict them
-    
-    forward_int: Mid price movement will be computed
-                 over this interval (in ms)
-
-    lb_periods: List containing the lookback periods
-    over which order flow imbalance information will
-    be computed
     """
 
     start_time = time.time()
 
-    # First compute the variable to be predicted
+    # Compute the variable to be predicted
     for fwd in fw_window:
         # Note the negative side in -fwd because
         # it's a forward looking quantity, movement
@@ -163,7 +142,7 @@ def generate_alphas_and_targets(df:pd.DataFrame,
     df = compute_ofi(df,levels)
 
     # Compute order flow imbalance information for the periods
-    # specified in lb_periods
+    # specified in lb_periods and level in levels
     for level in levels:
         for lb in lb_periods:
             # In order to compute OFI for each period, we have to first compute OFI
@@ -178,10 +157,8 @@ def generate_alphas_and_targets(df:pd.DataFrame,
 
 def subsample(df:pd.DataFrame, gr:float) -> pd.DataFrame:
     """
-    Gr: Defines the amount of seconds over which the data
-    will be aggregated.
-
-    df: Input dataframe which will be equally sampled
+    Function devoted to create an equally sized time window
+    dataframe from the original one
     """
 
     org_size = len(df)
@@ -209,20 +186,8 @@ def run_lasso_regression(df:pd.DataFrame,
     """
     Functiond devoted to compute Lasso linear
     regression. 
-    
-    df: Input dataframe containing the predictors
-    , X, and the target to predict, y.
-
-    predictors: Features to be used as regressors.
-    target: Feature to be predicted.
-
-    alpha: Parameter that modulates the 
-    strength of the regularization term 
-    of the regression. When alpha=0,
-    lasso regression is the usual OLS regression
-
     """
-    
+
     lasso = linear_model.Lasso(alpha=alpha,fit_intercept=False)
     lasso.fit(X=df[predictors], y=df[target])
     coefs = lasso.coef_
@@ -237,12 +202,6 @@ def run_ols(df:pd.DataFrame,
         
     """
     Functiond devoted to compute OLS regression.
-    
-    df: Input dataframe containing the predictors
-    , X, and the target to predict, y.
-
-    predictors: Features to be used as regressors.
-    target: Feature to be predicted.
     """
     
     lreg = linear_model.LinearRegression(fit_intercept=False).fit(X=df[predictors], y=df[target])
@@ -264,14 +223,16 @@ def prepare_for_regression(path:str,
 
     ob_files = glob.glob(f'{"/".join(path.split("/")[:-2])}/generated_ob/out*.csv')
     formatted_files = []
+    
+    if samp_window<0.5:
+            raise ValueError(f"sample_window option has to be > 0.5s, it is {samp_window}")
+    
     for file in ob_files:
         ob = pd.read_csv(file)
 
         # Drop columns as price and side which are not relevant anymore
         ob.drop(['price','side'],axis=1,inplace=True)
 
-        if samp_window<0.5:
-            raise ValueError(f"sample_window option has to be > 0.5s, it is {samp_window}")
         ob_sampled = subsample(ob,samp_window)
 
         ob_sampled = generate_alphas_and_targets(ob_sampled, lb_periods=lb_periods,
@@ -320,11 +281,6 @@ def run_regression(df:pd.DataFrame,
     which of the regressive models delivers the better results.
     In order to do so, an output csv will be generated with all
     the desired statistics
-
-    df: input dataframe containing all predictors and target quantities
-    alpha: parameter controlling the stength of the regularization
-    predictors: list of labels to try to predict target
-    target: future quantity that needs to be predicted
     """
 
     pred = get_predictors(levels,lb_periods)
@@ -384,6 +340,11 @@ def get_best_model(df:pd.DataFrame,
                    fwd_ret:str,
                    levels:list[int],
                    lb_periods:list[int]) -> tuple:
+    """
+    Function whose goal is to retrieve the best model
+    out of the ones computed before
+    """
+
     # Now that we know which mid price is the one that we can
     # predict better, we will compute the squared mean error
     # of all the models across the cross validation set
@@ -418,8 +379,6 @@ def construct_signal(df:pd.DataFrame,
     """
     Function devoted to compute the trading signal into the test
     dataframe and report the r_square of the fit (out of sample)
-
-    df: Test dataset
     """
     # Create the signal on the test set and asses how good our fit
     # is out of the sample
@@ -440,10 +399,6 @@ def print_signal(df:pd.DataFrame,fwd_ret:str) -> None:
     """
     Function devoted to print the signal generated from our regression
     analysis
-    
-    df: DataFrame that contains the signal
-    fwd_ret: String to identify which forward return to plot it against
-
     """
 
     for metric in ['signal',fwd_ret]:
@@ -454,6 +409,17 @@ def print_signal(df:pd.DataFrame,fwd_ret:str) -> None:
     plt.title(f'predicted(blue) vs actual(orange)')
     plt.show()
 
+# Why I am using a tuple instead of a list?
+# We do not need to modify the incoming order book
+# updates, so I've choosen it as a immutable data type
+ob_update = Tuple[int,#timestamp
+                  str,#side
+                  str,#action
+                  int,#id
+                  float,#price. From the data seems like lot size is 5 monetary
+                  # units, but in general it could be any floating point number
+                  int, #quantity, number of shares/contracts
+                  ]
 class orderbook:
 
     def __init__(self, log_warnings:bool=False) -> None:
@@ -599,10 +565,6 @@ class orderbook:
                 # either price or vol have changed, but not both.
                 self._modify_orderid()
     
-    #TO-D0: Develop or remove this
-    def _quality_checks(self) -> None:
-        return None
-    
     def _generate_statistics(self) -> None:
 
         # bid/ask prices can be None though, perfome checks:
@@ -637,10 +599,6 @@ class orderbook:
                 else:
                     self.ob_view[f"{side}p{i}"] = None
                     self.ob_view[f"{side}q{i}"] = 0
-
-        #TO-DO: Perform some quality checks to ensure the produced
-        #       orderbook has the desired properties
-        #self._quality_checks()
 
         # Add orderbook derived statistics to the view
         self._generate_statistics()

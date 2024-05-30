@@ -9,18 +9,20 @@ the analysis
 """
 
 import argparse
+import os
 from sklearn.model_selection import train_test_split
 import sys, importlib
 from utils import *
 importlib.reload(sys.modules['utils'])
 
-sys.argv= ['']
+#sys.argv= ['']
 parser = argparse.ArgumentParser(prog='Orderbook analyzer',
                                  description='Package devoted to create and analyze orderbooks')
 parser.add_argument('--path', help = 'Absolute path containing the input files',
-                    type = str, default ='/home/axelbm23/Code/AlgoTrading/orderbook/codetest/res_*.csv')
+                    type = str, default =f'{os.path.abspath(os.getcwd())}/codetest/res_*.csv')
 parser.add_argument('--regenerate_ob',
-                    help = 'If true script will regenerate the orderbooks from scratch, else it will try to load them',
+                    help = 'If true script will regenerate the orderbooks from scratch, else it will try to load them '\
+                    'if they were previously created in generated_ob',
                     type=bool, default=True)
 parser.add_argument('--fwd_periods',
                     help = 'Array containing the forward looking periods to compute mid price changes (in seconds)',
@@ -36,8 +38,8 @@ parser.add_argument('--alphas', help= 'Regularization term used for the Lasso re
                     type=str, default=[0.0,1.0,10,100,10_000])
 parser.add_argument('--ob_logger', help='If True, the script will print lots debugging information '\
                     'for the orderbook creation part', type=bool, default=False)
-parser.add_argument('--sampling_window', help = 'Sampling period (in seconds) over which the original orderbook'\
-                    'will be aggregated. Smallest possible value of this is half a second',
+parser.add_argument('--sampling_window', help = 'Sampling period (in seconds) over which the original orderbook '\
+                    'will be aggregated. Smallest possible value of this is 0.5',
                     type=float, default=1.0)
 args = parser.parse_args()
 
@@ -50,8 +52,8 @@ sampled = prepare_for_regression(args.path,args.sampling_window,
 sampled_train,cv_and_test = train_test_split(sampled,train_size=args.train_size,shuffle=False)
 sampled_cv,sampled_test = train_test_split(cv_and_test,train_size=0.5,shuffle=False)
 
-# Run regressions and get the best explained return and
-# the best parameters and model to predict it
+# Run regressions and get the best explained mid-price change 
+# and the best parameters and model to predict it
 reg_results,results,models = run_regression(sampled_train, args.levels,
                                             args.lb_periods, args.fwd_periods,
                                             args.alphas)
