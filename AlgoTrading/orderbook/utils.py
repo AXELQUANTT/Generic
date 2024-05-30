@@ -92,7 +92,7 @@ def generate_orderbooks(log:bool, path:str, regenerate_ob:bool) -> None:
     end_time = time.time()
     print(f'Orderbooks were created in {round(end_time-start_time,3)} s')
 
-def compute_ofi(df:pd.DataFrame, levels:int) -> int:
+def compute_ofi(df:pd.DataFrame, levels:int) -> pd.DataFrame:
         """
         Function devoted to compute order flow imabalance
         """
@@ -375,7 +375,7 @@ def construct_signal(df:pd.DataFrame,
                      best_model:tuple,
                      fwd_price_label:str,
                      lvls:list[int],
-                     lb_periods:list[int]) -> pd.DataFrame:
+                     lb_periods:list[int]) -> tuple[pd.DataFrame, float]:
     """
     Function devoted to compute the trading signal into the test
     dataframe and report the r_square of the fit (out of sample)
@@ -418,7 +418,7 @@ ob_update = Tuple[int,#timestamp
                   int,#id
                   float,#price. From the data seems like lot size is 5 monetary
                   # units, but in general it could be any floating point number
-                  int, #quantity, number of shares/contracts
+                  int, #volume, number of contracts bid/offered
                   ]
 class orderbook:
 
