@@ -15,6 +15,12 @@ import sys, importlib
 from utils import *
 importlib.reload(sys.modules['utils'])
 
+def format_args() -> None:
+    args.fwd_periods = [int(x) for x in args.fwd_periods.split(',')]
+    args.lb_periods = [int(x) for x in args.lb_periods.split(',')]
+    args.levels = [int(x) for x in args.levels.split(',')]
+    args.alphas = [float(x) for x in args.alphas.split(',')]
+
 #sys.argv= ['']
 parser = argparse.ArgumentParser(prog='Orderbook analyzer',
                                  description='Package devoted to create and analyze orderbooks')
@@ -22,26 +28,28 @@ parser.add_argument('--path', help = 'Absolute path containing the input files',
                     type = str, default =f'{os.path.abspath(os.getcwd())}/codetest/res_*.csv')
 parser.add_argument('--regenerate_ob',
                     help = 'If true script will regenerate the orderbooks from scratch, else it will try to load them '\
-                    'if they were previously created in generated_ob',
-                    type=bool, default=True)
+                    'if they were previously created in generated_ob folder',
+                    type=bool, default=False)# TO-DO: Change this to True
 parser.add_argument('--fwd_periods',
                     help = 'Array containing the forward looking periods to compute mid price changes (in seconds)',
-                    default=[5,10,60,300,600,1800,3600,7200])
+                    default='5,10,60,300,600,1800,3600,7200')
 parser.add_argument('--lb_periods', 
                     help = 'Array containing the backward looking periods used to compute set of predictors (in seconds)',
-                    default=[5,10,60,300,600,1800,3600,7200])
+                    default='5,10,60,300,600,1800,3600,7200')
 parser.add_argument('--train_size', help = 'Percentage of data devoted to train the model',
                     type = float, default = 0.6)
 parser.add_argument('--levels', help = 'Array specifying which ob levels will be taken into account '\
-                    'to compute the order flow imbalance over', default=[0])
-parser.add_argument('--alphas', help= 'Regularization term used for the Lasso regression',
-                    type=str, default=[0.0,1.0,10,100,10_000])
+                    'to compute the order flow imbalance over',
+                    type=str,default='0')
+parser.add_argument('--alphas', help = 'Regularization term used for the Lasso regression',
+                    type = str, default = '0.0,1.0,10,100,10000')
 parser.add_argument('--ob_logger', help='If True, the script will print lots debugging information '\
-                    'for the orderbook creation part', type=bool, default=False)
+                    'for the orderbook creation part', type = bool, default = False)
 parser.add_argument('--sampling_window', help = 'Sampling period (in seconds) over which the original orderbook '\
                     'will be aggregated. Smallest possible value of this is 0.5',
-                    type=float, default=1.0)
+                    type = float, default = 1.0)
 args = parser.parse_args()
+format_args()
 
 generate_orderbooks(args.ob_logger, args.path, args.regenerate_ob)
 sampled = prepare_for_regression(args.path,args.sampling_window,
