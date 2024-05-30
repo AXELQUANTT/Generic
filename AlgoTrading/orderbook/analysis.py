@@ -29,7 +29,7 @@ parser.add_argument('--path', help = 'Absolute path containing the input files',
 parser.add_argument('--regenerate_ob',
                     help = 'If true script will regenerate the orderbooks from scratch, else it will try to load them '\
                     'if they were previously created in generated_ob folder',
-                    type=bool, default=False)# TO-DO: Change this to True
+                    type=bool, default=True)
 parser.add_argument('--fwd_periods',
                     help = 'Array containing the forward looking periods to compute mid price changes (in seconds)',
                     default='5,10,60,300,600,1800,3600,7200')
