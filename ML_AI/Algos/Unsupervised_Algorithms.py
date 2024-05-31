@@ -6,6 +6,91 @@ import numpy as np
 from typing import List, Sequence, Dict
 import matplotlib.pyplot as plt
 import warnings
+import scipy.stats as stats
+
+class Anomaly_Detection:
+    """
+    Given a dataset containing a set of features, this algo
+    is devoted to identify which of those data points are
+    'anomalies'.
+
+    This algorithm first identifies which probability 
+    distribution is the one that better explains
+    the data. In case the user provides some labeled
+    data, it then estimates which is the value of
+    alpha that can detect better the anomalous data
+    and returns 1) the distribution it uses and
+    2) the value of epsilon to detect it.
+
+    The algorithm assumes that the features are
+    continous random variables
+    """ 
+
+    def __init__(self, x:np.array, **kwargs) -> None:
+        self.x = x
+        self.size,self.feat = x.shape
+        self.dist = dict((feat_idx,()) for feat_idx in range(self.feat))
+        # In case the user provides labeled y values, use them 
+        self.y = kwargs.get('y', None)
+        self.epsilon = kwargs.get('epsilon',None)
+    
+    def _get_distribution(self) -> None:
+        """
+        Function devoted to get the distribution that better explains
+        each of the features in our input data
+        """
+
+        # Get all continous probability distributions in scipy
+        all_dist = [getattr(stats, d) for d in dir(stats) if isinstance(getattr(stats, d), stats.rv_continuous)]
+        for feat in range(self.feat):
+            min_pval = float('inf')
+            var = self.x[:,feat]
+            for dist in all_dist:
+                # First compute the meaningful parameters of the distribution
+                try:
+                    # Catch exceptions as it may be the case that the proposed distribution
+                    # can not be fitted to the data
+                    params = dist.fit(var)
+                    tstat, pval = stats.ks_1samp(x=var, cdf=dist.cdf, args=params)
+                    if pval < min_pval:
+                        min_pval = pval
+                        self.sel_dis[feat] = (dist,pval)
+                except ValueError:
+                    warnings.warn(f'Distribution {dist.name} can not be fitted to feature {feat}')
+    
+    def _compute_prob(self) -> np.array:
+        """
+        From the previously computed distributions,
+        calculate the probabiliy of occurrence of each 
+        data point
+        """
+        
+        probs = np.ones([self.size,1])
+        for feat in range(self.feat):
+            probs *= self.sel_dis[feat].pdf(self.x[:,feat])
+        
+        return probs
+
+    def detect_anomalies(self, x:np.array):
+        """
+        Main function of the class. It returns a [self.size,1] binary array
+        where 0 indicates normal data point and 1 indicates abnormal one
+        """
+
+        self._get_distribution()
+        probabilities = self._compute_prob()
+        
+        if self.epsilon:
+            return probabilities < self.epsilon
+        else:
+            if not self.y:
+                raise ValueError(f'y is not provided, neither does epsilon, '
+                                 f'please provide one of them')
+            else:
+                # if we do not have labeled data, our best shot is
+                # to indicate that a point is anomalous if its
+                # probability of occurrence (forecasted by our model)
+                # is smaller than a given value
 
 class K_means:
 
@@ -129,3 +214,8 @@ class K_means:
         else:
             raise ValueError("Centroids are not being computed yet,"
                              "run compute_clusters function first")
+        
+
+x = np.array([np.random.chisquare(10,size=10000),
+             np.random.normal(size=10000)])
+dist = Anomaly_Detection(x).get_distribution()
