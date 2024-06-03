@@ -3,7 +3,7 @@ Library containing multiple unsupervised algorithms
 """
 
 import numpy as np
-from typing import List, Sequence, Dict
+from typing import List, Sequence, Dict, Union, Optional
 import matplotlib.pyplot as plt
 import warnings
 import scipy.stats as stats
@@ -14,30 +14,26 @@ class Anomaly_Detection:
     is devoted to identify which of those data points are
     'anomalies'.
 
-    This algorithm first identifies which probability 
-    distribution is the one that better explains
-    the data. In case the user provides some labeled
-    data, it then estimates which is the value of
-    alpha that can detect better the anomalous data
-    and returns 1) the distribution it uses and
-    2) the value of epsilon to detect it.
+    This algorithm should be run:
+    ad = Anomaly_Detection(x_test)
+    epsilon = ad.compute_epsilon(x_cv, y_cv)
+    anomalous = compute_anomalous(x_train,epsilon)
 
     The algorithm assumes that the features are
     continous random variables
     """ 
 
-    def __init__(self, x:np.array, **kwargs) -> None:
+    def __init__(self, x:np.array) -> None:
+        # Assumes number of anomalies in x is ~ 0 wrt len(x)
         self.x = x
         self.size,self.feat = x.shape
         self.dist = dict((feat_idx,()) for feat_idx in range(self.feat))
-        # In case the user provides labeled y values, use them 
-        self.y = kwargs.get('y', None)
-        self.epsilon = kwargs.get('epsilon',None)
     
-    def _get_distribution(self) -> None:
+    def get_distribution(self) -> None:
         """
-        Function devoted to get the distribution that better explains
-        each of the features in our input data
+        Main function of the algo devoted
+        to compute the probability distributions
+        of the input data
         """
 
         # Get all continous probability distributions in scipy
@@ -58,7 +54,7 @@ class Anomaly_Detection:
                 except ValueError:
                     warnings.warn(f'Distribution {dist.name} can not be fitted to feature {feat}')
     
-    def _compute_prob(self) -> np.array:
+    def _compute_prob(self, x:np.array) -> np.array:
         """
         From the previously computed distributions,
         calculate the probabiliy of occurrence of each 
@@ -67,31 +63,43 @@ class Anomaly_Detection:
         
         probs = np.ones([self.size,1])
         for feat in range(self.feat):
-            probs *= self.sel_dis[feat].pdf(self.x[:,feat])
-        
+            probs *= self.sel_dis[feat].pdf(x[:,feat])
         return probs
 
-    def detect_anomalies(self, x:np.array):
+    def compute_epsilon(self, x_ce:np.array, y_ce:np.array) -> float:
         """
-        Main function of the class. It returns a [self.size,1] binary array
-        where 0 indicates normal data point and 1 indicates abnormal one
+        Main function of the class. It returns the epsilon
+        that gets the higher rate of anomalous data points 
+        correctly labeled. It uses binary search to achieve
+        that
         """
 
         self._get_distribution()
-        probabilities = self._compute_prob()
-        
-        if self.epsilon:
-            return probabilities < self.epsilon
-        else:
-            if not self.y:
-                raise ValueError(f'y is not provided, neither does epsilon, '
-                                 f'please provide one of them')
-            else:
-                # if we do not have labeled data, our best shot is
-                # to indicate that a point is anomalous if its
-                # probability of occurrence (forecasted by our model)
-                # is smaller than a given value
+        probabilities = self._compute_prob(x_ce)
 
+        left = 0
+        right = 1.0
+        real_anomalies = sum(y_ce)
+        while left <= right:
+            epsilon = (left+right)/2
+            detected_anomalies = sum(probabilities < epsilon)
+            if detected_anomalies > real_anomalies:
+                right =  epsilon - 0.01
+            elif detected_anomalies < real_anomalies:
+                left = epsilon + 0.01
+            else:
+                return epsilon
+        return epsilon
+    
+    def compute_anomalous(self, x_new:np.arary, epsilon:float) -> np.array:
+        """
+        Function return a np.ones[self.size,1] with 0s and 1s,
+        where 1s indicate anomalous datapoints and 0 indicates
+        regular data points
+        """
+
+        return self._compute_prob(x_new) < epsilon
+        
 class K_means:
 
     def __init__(self, x:Sequence, k:int, iters:int, max_iters:int) -> None:
