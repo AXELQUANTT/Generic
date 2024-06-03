@@ -5,18 +5,21 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from Algorithms import GradDescLogReg,GradDescLinReg
-from Unsupervised_Algorithms import K_means
+from Unsupervised_Algorithms import K_means, Anomaly_Detection
 from sklearn.cluster import KMeans
+import scipy.stats as sc_stats
 
-def Test(true_params:np.array, test_params:np.array, epsilon:float) -> bool:
-    discrepancies = test_params/true_params - 1.0
-    
-    # may be the case param is multidimensional
-    for item in discrepancies.flatten():
-        if item>epsilon:
-            return False
-    
-    return True 
+def Test(true_params:np.array, test_params:np.array, epsilon:float, binary:bool=False) -> bool:
+    if not binary:
+        discrepancies = test_params/true_params - 1.0
+        # may be the case param is multidimensional
+        for item in discrepancies.flatten():
+            if item>epsilon:
+                return False
+        return True 
+    else:
+        discrepancies = true_params == test_params
+        return sum(discrepancies)==len(discrepancies)
 
 tests = []
 
@@ -62,6 +65,9 @@ tests.append(all(abs(reg_comp_params)<abs(comp_params)))
 ###################### UNSUPERVISED ALGORITHMS #######################
 ######################################################################
 
+#########
+# K_means
+#########
 x_e = 1.5*np.random.random(100)+2.0 # numbers in the interval [2, 3.5)
 x_w = -1.0*x_e
 y_n = 1.5*np.random.random(100)+3.0 # numbers in the interval [3, 4.5)
@@ -82,6 +88,31 @@ sk_k_m = KMeans(n_clusters=4,n_init=1500,max_iter=500).fit(x_test)
 sk_centroids = np.sort(sk_k_m.cluster_centers_, axis=0)
 
 tests.append(Test(centroids,sk_centroids,0.01))
+
+
+###################
+# ANOMALY DETECTION
+###################
+
+x = np.array([np.random.normal(loc=0.5,scale=1.0,size=500),
+              np.random.normal(loc=5.0,scale=2.5,size=500)]).T
+
+# For normal distributions we know that 99.8% of the data is
+# within 3*st_dev of the distribution. Create numbers
+# that we know that have a pdf < 0.05
+x_train = x[:400,:]
+x_anomalous = np.concatenate((np.array([-1*np.random.random(25)-2.5,np.random.random(25)+9.0]).T,
+                             np.array([np.random.random(25)+3.5,np.random.random(25)]).T))
+x_cv = np.concatenate([x[400:450,:],x_anomalous[:25,:]])
+x_test = np.concatenate([x[450:,:],x_anomalous[25:,:]])
+y_cv = np.concatenate((np.zeros([50,1]),np.ones([25,1])))
+y_test = np.concatenate((np.zeros([50,1]),np.ones([25,1])))
+
+ad = Anomaly_Detection(x_train)
+epsilon = ad.compute_epsilon(x_cv,y_cv)
+anomalous = ad.compute_anomalous(x_test,epsilon)
+
+tests.append(Test(anomalous,y_test,0.01,True))
 
 ######################################################################
 print(f"Passed test? {all(tests)}!")

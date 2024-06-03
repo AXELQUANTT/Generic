@@ -6,6 +6,7 @@ import numpy as np
 from typing import List, Sequence, Dict, Union, Optional
 import matplotlib.pyplot as plt
 import warnings
+import scipy.special
 import scipy.stats as stats
 
 class Anomaly_Detection:
@@ -29,13 +30,16 @@ class Anomaly_Detection:
         self.size,self.feat = x.shape
         self.dist = dict((feat_idx,()) for feat_idx in range(self.feat))
     
-    def get_distribution(self) -> None:
+    def _get_distribution(self) -> None:
         """
         Main function of the algo devoted
         to compute the probability distributions
         of the input data
         """
 
+        
+        scipy.special.seterr(all='raise')
+        #warnings.filterwarnings('error')
         # Get all continous probability distributions in scipy
         all_dist = [getattr(stats, d) for d in dir(stats) if isinstance(getattr(stats, d), stats.rv_continuous)]
         for feat in range(self.feat):
@@ -47,12 +51,18 @@ class Anomaly_Detection:
                     # Catch exceptions as it may be the case that the proposed distribution
                     # can not be fitted to the data
                     params = dist.fit(var)
+                    fitt_dist = dist(*params)
                     tstat, pval = stats.ks_1samp(x=var, cdf=dist.cdf, args=params)
-                    if pval < min_pval:
+                    if pval == 0.0:
+                        self.dist[feat] = (fitt_dist,pval)
+                        break
+                    elif pval < min_pval:
                         min_pval = pval
-                        self.sel_dis[feat] = (dist,pval)
-                except ValueError:
+                        print(f'Dsitrbution to be fitted => {dist}')
+                        self.dist[feat] = (fitt_dist,pval)
+                except:
                     warnings.warn(f'Distribution {dist.name} can not be fitted to feature {feat}')
+                    pass
     
     def _compute_prob(self, x:np.array) -> np.array:
         """
@@ -61,9 +71,10 @@ class Anomaly_Detection:
         data point
         """
         
-        probs = np.ones([self.size,1])
+        probs = np.ones([len(x),])
         for feat in range(self.feat):
-            probs *= self.sel_dis[feat].pdf(x[:,feat])
+            prob_dist = self.dist[feat][0]
+            probs = np.multiply(probs,prob_dist.pdf(x[:,feat]))
         return probs
 
     def compute_epsilon(self, x_ce:np.array, y_ce:np.array) -> float:
@@ -91,14 +102,16 @@ class Anomaly_Detection:
                 return epsilon
         return epsilon
     
-    def compute_anomalous(self, x_new:np.arary, epsilon:float) -> np.array:
+    def compute_anomalous(self, x_new:np.array, epsilon:float) -> np.array:
         """
         Function return a np.ones[self.size,1] with 0s and 1s,
         where 1s indicate anomalous datapoints and 0 indicates
         regular data points
         """
 
-        return self._compute_prob(x_new) < epsilon
+        anomalous = np.array(self._compute_prob(x_new) < epsilon, dtype=int)
+        anomalous.resize([len(x_new),1])
+        return anomalous
         
 class K_means:
 
