@@ -222,8 +222,3 @@ class K_means:
         else:
             raise ValueError("Centroids are not being computed yet,"
                              "run compute_clusters function first")
-        
-
-x = np.array([np.random.chisquare(10,size=10000),
-             np.random.normal(size=10000)])
-dist = Anomaly_Detection(x).get_distribution()
