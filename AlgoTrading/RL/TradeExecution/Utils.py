@@ -10,16 +10,15 @@ from typing import SupportsFloat
 # sys.path.insert(3, '/home/axelbm23/Code/ML_AI/Algos/Utils')
 
 
-def load_data(data_points: int, path: str) -> pd.DataFrame:
+def load_data(path: str, data_points: int = 0) -> pd.DataFrame:
     """
     Function devoted to import the data and format it accordingly
     """
 
     # col_labels = ['Index', 'Timestamp', 'Datetime']
     # side_labels = [f'{side}{att}{i}' for side in ['b','a'] for i in range(10) for att in ['p','q']]
-
     col_labels = ['Timestamp', 'bp0', 'bq0', 'ap0', 'aq0']
-    df = pd.read_csv(path, nrows=data_points, usecols=[1, 3, 4, 23, 24],
+    df = pd.read_csv(path, nrows=data_points if data_points > 0 else None, usecols=[1, 3, 4, 23, 24],
                      names=col_labels, header=0)
 
     # Convert the Timestamp into a datetime
@@ -29,6 +28,10 @@ def load_data(data_points: int, path: str) -> pd.DataFrame:
 
     # Return only the needed columns
     return df[['datetime', 'mp']]
+
+
+def format_history(hist: list[tuple]) -> pd.DataFrame:
+    return pd.DataFrame(hist, columns=['qt', 't', 'reward', 'algo', 'episode'])
 
 
 class TradingEnv(gym.Env):
@@ -111,6 +114,8 @@ class TradingEnv(gym.Env):
     def reset(self, seed=None) -> tuple[Any, dict[str, Any]]:
         self.qt = self.q0
         self.t = self.T
+        self.data_idx = 0
+        self.done = False
 
         info = {'Inventory': self.qt,
                 'Time_to_execute': self.t}
@@ -150,13 +155,18 @@ class TradingEnv(gym.Env):
         # We need to iterate over all sub-intervals comprised
         # between self.t and end_t
         reward = 0
+        shs_per_interval = self.action/self.mk
+        if shs_per_interval % 1.0 != 0.0:
+            raise ValueError(
+                f'shs_per_interval is not an int, {shs_per_interval}')
+
         for _ in range(self.mk):
             curr_price = self._get_mid_price(self.data_idx)
             next_price = self._get_mid_price(self.data_idx+1)
             reward += self.qt*(next_price-curr_price) - \
-                self.alpha*(self.action/self.mk)**2
+                self.alpha*shs_per_interval**2
             self.data_idx += 1
-            self.qt -= self.action/self.mk
+            self.qt -= shs_per_interval
 
         # Update time left to execute
         self.t -= self.dt
@@ -186,22 +196,25 @@ class TradingEnv(gym.Env):
 
 
 path = "/home/axelbm23/Code/AlgoTrading/RL/TradeExecution/data/1-09-1-20.csv"
-df = load_data(25000, path)
+df = load_data(path)
 
 # Create a trade execution environment with some random settings.
-te_env = TradingEnv(data=df, T=3600, q0=1000, N=5)
+te_env = TradingEnv(data=df, T=3600, q0=14_400, N=8)
 
 # Just for testing purposes, we will implement an
 # agent that follows a TWAP strategy.
 episodes = 100
 history = []
-twap_action = te_env.T/te_env.N
+twap_action = int(te_env.q0/te_env.N)
 for trie in range(episodes):
     te_env.reset()
     done = False
-    ep_data = []
     while not done:
         qt, t = te_env.extract_state()
         obs, reward, done, _, info = te_env.step(twap_action)
-        ep_data.append(obs+(reward,))
-    history.append(ep_data)
+        history.append(obs+(reward, 'twap', trie))
+
+# TO_DO: What if the algo decides that the amount of shares to be traded
+# in a given time interval is not an integer value
+
+results = format_history(history)
