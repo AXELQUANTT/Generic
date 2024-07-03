@@ -304,12 +304,13 @@ class DDQN():
         self.copy_cadency = sett['nn_copy_cadency']
         self.soft_update = sett['soft_update']
 
-    def _soft_update_policy(self, old_weights: np.array) -> None:
+    def _soft_update_policy(self) -> None:
         """
         Function that specifies how the the params of the policy network need
         to be transfered to the target network.
         """
 
+        old_weights = self.target_nn.get_weights()
         new_weights = self.policy_nn.get_weights()
         if self.target_nn_initialized:
             # If weights are still the initial ones, just set them
@@ -332,14 +333,14 @@ class DDQN():
         # First get all the data from the replay buffer
         states, actions, rewards, next_states, dones, p_init, p_last_step = self.replay_buffer.get_arrays_from_batch()
 
-        pre = time.time()
+        # pre = time.time()
         # Create the input for the NN adding the action to the state
         x = self._compute_input(states, actions)
-        post = time.time()
-        print(f'Computing inputs takes={round(post-pre,3)}')
+        # post = time.time()
+        # print(f'Computing inputs takes={round(post-pre,3)}')
         y = self._compute_targets(
             states, rewards, next_states, p_init, p_last_step)
-        print(f'Computing targets takes ={round(time.time()-post,3)}')
+        # print(f'Computing targets takes ={round(time.time()-post,3)}')
 
         return x, y
 
@@ -351,25 +352,9 @@ class DDQN():
         if self.replay_buffer.buffer_size() < self.min_replay_size:
             # If we have not collected enough data, do not update anything
             return 0
-        pre = time.time()
-        x, y = self._compute_regressors_targets()
-        post = time.time()
-        print(f'Computing x-y takes={round(post-pre,3)}s')
-        old_policy_weights = self.policy_nn.get_weights()
-        pre = time.time()
-        history = self.policy_nn.fit(x, y, verbose=0)
-        post = time.time()
-        print(f'Fitting x-y to policy network takes={round(post-pre,3)}')
-        if ep_counter // (self.copy_cadency-1) == 0.0:
-            # Finally assign the weights from our policy nn (now trained)
-            # to the target nn
-            # QUESTION  =>  Shall we update the weights of our network on every replay buffer?
-            #               Consider the fact that we'll only get here when we have a filled
-            #               replay buffer, which will probably happen not on a single episode
-            #               but in multiple ones
-            #
-            self._soft_update_policy(old_policy_weights)
 
+        x, y = self._compute_regressors_targets()
+        history = self.policy_nn.fit(x, y, verbose=0)
         return history.history['loss'][0]
 
     # The main function of the class
@@ -402,6 +387,17 @@ class DDQN():
                 # After we have created a new data_point, update our networks in case
                 # it's needed
                 loss += self._agent_update(ep)
+
+            if ep // (self.copy_cadency-1) == 0.0:
+                print('Copying weights from policy to target')
+                # Finally assign the weights from our policy nn (now trained)
+                # to the target nn
+                # QUESTION  =>  Shall we update the weights of our network on every replay buffer?
+                #               Consider the fact that we'll only get here when we have a filled
+                #               replay buffer, which will probably happen not on a single episode
+                #               but in multiple ones
+                #
+                self._soft_update_policy()
 
             print(f'episode {ep}/{self.episodes-1}')
             # Update the max_reward acquired on this episode.
@@ -452,15 +448,10 @@ class DDQN():
         # over states s'. Note that in general, q_values are just the output values
         # for a given input state s over all actions that can be taken
         # Note that we are computing the q values from our target_nn, not our policy_nn
-        # x_next_states = [self._compute_input(
-        #    next_states[idx:idx+1, :]) for idx, state in enumerate(states)]
         x_next_states = self._compute_input(next_states)
-        pre = time.time()
-        q_val = self.target_nn.predict(x_next_states[:, 1:])
+        q_val = self.target_nn.predict(x_next_states[:, 1:], verbose=0)
         max_q_val = np.array([q_val[x_next_states[:, 0] == i].max()
                               for i, _ in groupby(x_next_states[:, 0])]).reshape(len(states), 1)
-        post = time.time()
-        print(f'time computing q_val is={round(post-pre,3)}')
 
         r_last_step = next_states[:, 0] * (p_last_step[:, 0] -
                                            p_init[:, 0]) - self.env.alpha*next_states[:, 0]**2
@@ -507,9 +498,9 @@ class DDQN():
 path = "/home/axelbm23/Code/AlgoTrading/RL/TradeExecution/data/1-09-1-20.csv"
 df = load_data(path)
 
-settings = {'T': 16,  # time left to close our position, in seconds
-            'Inventory': 160,  # Initial inventory
-            'Steps': 8  # number of steps to close this inventory
+settings = {'T': 15,  # time left to close our position, in seconds
+            'Inventory': 10,  # Initial inventory
+            'Steps': 5  # number of steps to close this inventory
             }
 
 # Create a trade execution environment with some random settings.
@@ -526,18 +517,21 @@ network_architecture = {'neurons': [30]*5,  # same params as DDQN paper
 
 # All settings for the agent are copied from DDQN paper
 agent_settings = {'gamma': 1.0,
-                  'greedy': [0.9, 0.1],
+                  'greedy': [1.0, 0.01],
                   'environment': te_env,
-                  'episodes': 25,  # 10_000 it's the param in DDQN
+                  'episodes': 200,  # 10_000 it's the param in DDQN
                   'min_replay_size': 64,  # 5_000 it's the param in DDQN
                   'replay_mini_batch': 32,  # 32 is the value used in DDQN
-                  'nn_copy_cadency': 15,
+                  'nn_copy_cadency': 15,  # every how many episodes q_policy gets copied to q_target
                   'nn_architecture': network_architecture,
-                  'soft_update': 0.5}
+                  'soft_update': 0.90}
 
 # Create our DDQN agent and train it
 ddqn_agent = DDQN(sett=agent_settings)
 rewards, losses = ddqn_agent.learn()
+
+# TO-DO: Double check with a stupid agent that there
+# is no bug in our code
 
 
 # Just for testing purposes, we will implement an
