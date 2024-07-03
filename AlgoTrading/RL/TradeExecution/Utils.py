@@ -3,6 +3,7 @@ import datetime
 from gymnasium import spaces
 from gymnasium.core import RenderFrame
 import gymnasium as gym
+from itertools import groupby
 import keras
 import matplotlib.pyplot as plt
 import numpy as np
@@ -331,11 +332,14 @@ class DDQN():
         # First get all the data from the replay buffer
         states, actions, rewards, next_states, dones, p_init, p_last_step = self.replay_buffer.get_arrays_from_batch()
 
+        pre = time.time()
         # Create the input for the NN adding the action to the state
         x = self._compute_input(states, actions)
-
+        post = time.time()
+        print(f'Computing inputs takes={round(post-pre,3)}')
         y = self._compute_targets(
             states, rewards, next_states, p_init, p_last_step)
+        print(f'Computing targets takes ={round(time.time()-post,3)}')
 
         return x, y
 
@@ -411,26 +415,34 @@ class DDQN():
         """
         This function creates the input needed for the nn, both for the
         target and for the policy. If no actions are provided, it generates
-        all the possible actions (0,qt) for the current state.
+        all the possible actions (0, qt) for the current state.
         """
 
-        x = states
-        poss_actions = actions
-        # We assume is a 2d array with a single row
         if actions.size == 0:
-            qt = states[0, 0]
-            x = np.repeat(states, qt+1, axis=0)
-            poss_actions = np.array(
-                range(qt+1), dtype=int).reshape(qt+1, 1)
+            x = np.array([])
+            for idx, state in enumerate(states):
+                qt = state[0]
+                # TO_DO: Add index to identify the state => needed later to get the q_values
+                mod_state = np.append(
+                    np.array([idx]), states[idx:idx+1, :]).reshape(1, state.shape[0]+1)
+                rep_states = np.repeat(mod_state, qt+1, axis=0)
+                poss_actions = np.array(
+                    range(qt+1), dtype=int).reshape(qt+1, 1)
+                repeated_state = np.append(rep_states, poss_actions, axis=1)
+                if x.size == 0:
+                    x = repeated_state
+                else:
+                    x = np.concatenate([x, repeated_state])
+            return x
 
         # Ensure output dimensions make sense
-        n = x.shape[0]
-        a = poss_actions.shape[0]
+        n = states.shape[0]
+        a = actions.shape[0]
         if n != a:
             raise ValueError(
                 f'Dimensions of states={n} and actions={a} do not match, check!')
 
-        return np.append(x, poss_actions, axis=1)
+        return np.append(states, actions, axis=1)
 
     def _compute_targets(self, states, rewards, next_states, p_init, p_last_step):
         """
@@ -440,45 +452,21 @@ class DDQN():
         # over states s'. Note that in general, q_values are just the output values
         # for a given input state s over all actions that can be taken
         # Note that we are computing the q values from our target_nn, not our policy_nn
+        # x_next_states = [self._compute_input(
+        #    next_states[idx:idx+1, :]) for idx, state in enumerate(states)]
+        x_next_states = self._compute_input(next_states)
+        pre = time.time()
+        q_val = self.target_nn.predict(x_next_states[:, 1:])
+        max_q_val = np.array([q_val[x_next_states[:, 0] == i].max()
+                              for i, _ in groupby(x_next_states[:, 0])]).reshape(len(states), 1)
+        post = time.time()
+        print(f'time computing q_val is={round(post-pre,3)}')
 
-        # TO-DO: Need to transform this loop based approach into a vectorized version
+        r_last_step = next_states[:, 0] * (p_last_step[:, 0] -
+                                           p_init[:, 0]) - self.env.alpha*next_states[:, 0]**2
 
-        y = np.empty(shape=(states.shape[0], 1))
-        for idx, state in enumerate(states):
-            # This is a bit convoluted, but for each tuple (state, action, next_state)
-            # we have to choose which is the action, a', that gets the biggest qvalue
-            # on the state=next_state
-            qt, t = state
-            q_val = 0
-            r_last_step = 0
-            rew = rewards[idx, 0]
-            if t > self.env.dt:
-                # Compute all possible actions on the next state and
-                # use the one that delivers the best qval (using target nn of course)
-                # We select from idx to idx+1 to still distribute a 2d array
-                x_next_states = self._compute_input(next_states[idx:idx+1, :])
-                # For each of the x_next_states, we have to get the max value
-                q_val = np.max(self.target_nn.predict(
-                    x_next_states, verbose=0))
-
-            elif t == self.env.dt:
-                remaning_q = next_states[0]
-                # The reward of the last step hugely penalizes the inventory we have at that step
-                # but does not impose a given action!!! If the algo learns appropiately, it
-                # should figure out that holding a lot of inventory in the last step is really bad!!!
-                r_last_step = remaning_q * \
-                    (p_last_step-p_init) - self.env.alpha*remaning_q**2
-            else:
-                # Check what reward do we have for t==0
-                print(rew)
-
-            # TO_DO: WHAT DO WE DO WITH t==0????
-
-            # Note that for terminal states, dones will be equal to one, and y will be just
-            # equal to the current reward (as the expected reward on future steps is 0 as
-            # we are on a terminal state)
-            # Implement Bellman equation
-            y[idx, 0] = rew + self.gamma*q_val + self.gamma*r_last_step
+        y = rewards[:, 0] + self.gamma*(states[:, 1] > self.env.dt).astype(
+            int)*max_q_val[:, 0] + self.gamma*(states[:, 1] == self.env.dt).astype(int)*r_last_step
 
         return y
 
@@ -509,7 +497,8 @@ class DDQN():
         # Compute the q-value from all the possible actions [0,qt] and retrieve the action
         # that delivers the best overall q-value
         x = self._compute_input(state)
-        predictions = self.policy_nn.predict(x, verbose=0)
+        # Remember that the first element of x is just a mute index
+        predictions = self.policy_nn.predict(x[:, 1:], verbose=0)
         best_action = np.argmax(predictions)
 
         return best_action
