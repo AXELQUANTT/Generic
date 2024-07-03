@@ -333,24 +333,21 @@ class DDQN():
         # First get all the data from the replay buffer
         states, actions, rewards, next_states, dones, p_init, p_last_step = self.replay_buffer.get_arrays_from_batch()
 
-        # pre = time.time()
         # Create the input for the NN adding the action to the state
         x = self._compute_input(states, actions)
-        # post = time.time()
-        # print(f'Computing inputs takes={round(post-pre,3)}')
         y = self._compute_targets(
             states, rewards, next_states, p_init, p_last_step)
-        # print(f'Computing targets takes ={round(time.time()-post,3)}')
 
         return x, y
 
-    def _agent_update(self, ep_counter: int) -> float:
+    def _agent_update(self) -> float:
         """
         Main function devoted to update the params
         of the policy and the target networks
         """
+
         if self.replay_buffer.buffer_size() < self.min_replay_size:
-            # If we have not collected enough data, do not update anything
+            # Ensure that we have enough data to start training
             return 0
 
         x, y = self._compute_regressors_targets()
@@ -370,6 +367,8 @@ class DDQN():
             greedy_param = ((n-ep)/n) * \
                 (self.greedy[0]-self.greedy[1]) + self.greedy[1]
             loss = 0
+            print(
+                f'episode {ep}/{self.episodes-1}, greedy_param={round(greedy_param,3)}')
             while not done:
                 s = self.env.extract_state()
                 # Choose an action => is in this part that we have to apply the greedy policy
@@ -386,9 +385,9 @@ class DDQN():
                 ep_reward += reward
                 # After we have created a new data_point, update our networks in case
                 # it's needed
-                loss += self._agent_update(ep)
+                loss += self._agent_update()
 
-            if ep // (self.copy_cadency-1) == 0.0:
+            if ep % (self.copy_cadency-1) == 0.0:
                 print('Copying weights from policy to target')
                 # Finally assign the weights from our policy nn (now trained)
                 # to the target nn
@@ -399,7 +398,6 @@ class DDQN():
                 #
                 self._soft_update_policy()
 
-            print(f'episode {ep}/{self.episodes-1}')
             # Update the max_reward acquired on this episode.
             # Compute the mean squared loss on the policy network
             tot_ep_rewards[ep] = ep_reward
@@ -519,7 +517,7 @@ network_architecture = {'neurons': [30]*5,  # same params as DDQN paper
 agent_settings = {'gamma': 1.0,
                   'greedy': [1.0, 0.01],
                   'environment': te_env,
-                  'episodes': 200,  # 10_000 it's the param in DDQN
+                  'episodes': 1_000,  # 10_000 it's the param in DDQN
                   'min_replay_size': 64,  # 5_000 it's the param in DDQN
                   'replay_mini_batch': 32,  # 32 is the value used in DDQN
                   'nn_copy_cadency': 15,  # every how many episodes q_policy gets copied to q_target
@@ -530,8 +528,16 @@ agent_settings = {'gamma': 1.0,
 ddqn_agent = DDQN(sett=agent_settings)
 rewards, losses = ddqn_agent.learn()
 
-# TO-DO: Double check with a stupid agent that there
-# is no bug in our code
+# TO-DO: Double check sequence of states to ensure there is no bug
+# in the environment
+
+# TO-DO: Once the agent is trained, study how it reacts to different values
+# inventory and time_to_expiry to see if it learned what we think it should
+# 1. for the same level of inventory, it should sell more shares the closer
+#   we are to the end of the interval.
+# 2. for the same time to end of interval, it should sell more shares with
+# increasing levels of inventory
+ddqn_agent.choose_action(curr_greedy=1.0, state=, train=False)
 
 
 # Just for testing purposes, we will implement an
