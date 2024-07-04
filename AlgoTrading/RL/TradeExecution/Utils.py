@@ -17,7 +17,6 @@ from keras.models import Sequential
 from keras.activations import relu, linear, leaky_relu
 from scipy.stats import binom
 import time
-# from tf_agents.agents import DqnAgent
 from typing import Any
 from typing import SupportsFloat
 
@@ -43,7 +42,7 @@ def load_data(path: str, data_points: int = 0) -> pd.DataFrame:
 
 
 def format_history(hist: list[tuple]) -> pd.DataFrame:
-    return pd.DataFrame(hist, columns=['qt', 't', 'reward', 'algo', 'episode'])
+    return pd.DataFrame(hist, columns=['qt', 't', 'action', 'reward', 'algo', 'episode'])
 
 
 def create_nn(input_size: int,
@@ -57,7 +56,7 @@ def create_nn(input_size: int,
     model.name = name
     model.add(keras.Input(shape=(input_size,)))
     for neurons in model_params['neurons']:
-        model.add(Dense(units=neurons, activation=leaky_relu,  # using leaky_relu instead of relu in order to avoid dying neuron issue in ReLU (acc to DDQN paper as well)
+        model.add(Dense(units=neurons, activation=relu,  # using leaky_relu instead of relu in order to avoid dying neuron issue in ReLU (acc to DDQN paper as well)
                   kernel_regularizer=tf.keras.regularizers.l2(model_params['lambda'])))
 
     # Finally add the output layer
@@ -148,10 +147,9 @@ class TradingEnv(gym.Env):
                                             high=np.array([self.q0, self.T]),
                                             dtype=np.float64)
 
-    def reset(self, seed=None) -> tuple[Any, dict[str, Any]]:
+    def reset(self) -> tuple[Any, dict[str, Any]]:
         self.qt = self.q0
         self.t = self.T
-        self.data_idx = 0
         self.done = False
 
         info = {'Inventory': self.qt,
@@ -217,8 +215,8 @@ class TradingEnv(gym.Env):
         # Distribute some printing information
         info = {'Inventory': self.qt,
                 'Time_to_execute': self.t,
-                'p_init': 0 if self.t != 0 else self._get_mid_price(self.data_idx-1),
-                'p_last_step': 0 if self.t != 0 else self._get_mid_price(self.data_idx)}
+                'p_init': 0 if self.t != 0 else self._get_mid_price(self.data_idx),
+                'p_last_step': 0 if self.t != 0 else self._get_mid_price(self.data_idx+1)}
 
         # If our inventory gets to 0 or we don't have more time to unfold our position,
         # we consider the episode to be finished
@@ -336,7 +334,7 @@ class DDQN():
         # Create the input for the NN adding the action to the state
         x = self._compute_input(states, actions)
         y = self._compute_targets(
-            states, rewards, next_states, p_init, p_last_step)
+            states, actions, rewards, next_states, p_init, p_last_step)
 
         return x, y
 
@@ -361,6 +359,8 @@ class DDQN():
         n = self.episodes-1
         for ep in range(self.episodes):
             # Get the initial state
+            # Why is it that we always get tranches of 60 movements? Isn't it the case that we never sell all remaining shares at once?
+            print(f'Data_idx={self.env.data_idx}')
             self.env.reset()
             done = False
             ep_reward = 0
@@ -416,7 +416,6 @@ class DDQN():
             x = np.array([])
             for idx, state in enumerate(states):
                 qt = state[0]
-                # TO_DO: Add index to identify the state => needed later to get the q_values
                 mod_state = np.append(
                     np.array([idx]), states[idx:idx+1, :]).reshape(1, state.shape[0]+1)
                 rep_states = np.repeat(mod_state, qt+1, axis=0)
@@ -438,7 +437,7 @@ class DDQN():
 
         return np.append(states, actions, axis=1)
 
-    def _compute_targets(self, states, rewards, next_states, p_init, p_last_step):
+    def _compute_targets(self, states, actions, rewards, next_states, p_init, p_last_step):
         """
         Auxiliary function devoted to compute the y-values for the networks
         """
@@ -480,6 +479,10 @@ class DDQN():
         if train and rand <= curr_greedy:
             # Exploration
             # Get a random trial from a binomial (qt , 1/time_to_expiry)
+            # Why are we enforcing on the exploration phase a TWAP approach? Should
+            # not the algorithm figure out that selling a lot of shares on an early
+            # point is not the best. Seems to me this is a way to reduce the exploration
+            # phase substantially => try with letting the algo pick any qt available
             return binom(qt, 1.0/t).rvs()
 
         # Exploitation
@@ -514,22 +517,51 @@ network_architecture = {'neurons': [30]*5,  # same params as DDQN paper
                         }
 
 # All settings for the agent are copied from DDQN paper
-agent_settings = {'gamma': 1.0,
+agent_settings = {'gamma': 0.99,
                   'greedy': [1.0, 0.01],
                   'environment': te_env,
                   'episodes': 1_000,  # 10_000 it's the param in DDQN
-                  'min_replay_size': 64,  # 5_000 it's the param in DDQN
-                  'replay_mini_batch': 32,  # 32 is the value used in DDQN
+                  'min_replay_size': 200,  # 5_000 it's the param in DDQN
+                  'replay_mini_batch': 100,  # 32 is the value used in DDQN
                   'nn_copy_cadency': 15,  # every how many episodes q_policy gets copied to q_target
                   'nn_architecture': network_architecture,
-                  'soft_update': 0.90}
+                  'soft_update': 0.5}
 
 # Create our DDQN agent and train it
 ddqn_agent = DDQN(sett=agent_settings)
 rewards, losses = ddqn_agent.learn()
 
-# TO-DO: Double check sequence of states to ensure there is no bug
-# in the environment
+# Right now
+
+
+def twap_choose_action(curr_greedy, state, train):
+    return int(te_env.q0/te_env.N)
+
+
+history = []
+print('Testing phase')
+agent_chooser = {'twap': twap_choose_action,
+                 'ddqn': ddqn_agent.choose_action}
+
+episodes = 200
+for agent in agent_chooser.keys():
+    for trie in range(episodes):
+        te_env.reset()
+        done = False
+        while not done:
+            state = te_env.extract_state()
+            action = agent_chooser[agent](
+                curr_greedy=0.01, state=state, train=False)
+            obs, reward, done, _, info = te_env.step(action)
+            history.append(list(obs[0, :])+list(action) +
+                           list([reward, agent, trie]))
+
+        print(f'progress...{trie+1}/{episodes}')
+
+results = format_history(history)
+
+# TO-DO: Maybe we are using a value of alpha that is too low? We are not penalizing enough
+# the bulk sell of shares??
 
 # TO-DO: Once the agent is trained, study how it reacts to different values
 # inventory and time_to_expiry to see if it learned what we think it should
@@ -537,23 +569,7 @@ rewards, losses = ddqn_agent.learn()
 #   we are to the end of the interval.
 # 2. for the same time to end of interval, it should sell more shares with
 # increasing levels of inventory
-ddqn_agent.choose_action(curr_greedy=1.0, state=, train=False)
-
+# ddqn_agent.choose_action(curr_greedy=1.0, state=, train=False)
 
 # Just for testing purposes, we will implement an
 # agent that follows a TWAP strategy.
-# episodes = 100
-# history = []
-# twap_action = int(te_env.q0/te_env.N)
-# for trie in range(episodes):
-#    te_env.reset()
-#    done = False
-#    while not done:
-#        qt, t = te_env.extract_state()
-#        obs, reward, done, _, info = te_env.step(twap_action)
-#        history.append(obs+(reward, 'twap', trie))
-
-
-# TO_DO: What if the algo decides that the amount of shares to be traded
-# in a given time interval is not an integer value
-# results = format_history(history)
