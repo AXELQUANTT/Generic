@@ -397,11 +397,6 @@ class DDQN():
                 print('Copying weights from policy to target')
                 # Finally assign the weights from our policy nn (now trained)
                 # to the target nn
-                # QUESTION  =>  Shall we update the weights of our network on every replay buffer?
-                #               Consider the fact that we'll only get here when we have a filled
-                #               replay buffer, which will probably happen not on a single episode
-                #               but in multiple ones
-                #
                 self._soft_update_policy()
 
             # Update the max_reward acquired on this episode.
@@ -505,10 +500,10 @@ class DDQN():
 path = "/home/axelbm23/Code/AlgoTrading/RL/TradeExecution/data/1-09-1-20.csv"
 df = load_data(path)
 
-settings = {'t': 3600,  # time left to close our position, in seconds
-            'inventory': 100,  # Initial inventory
+settings = {'t': 60,  # time left to close our position, in seconds
+            'inventory': 20,  # Initial inventory
             'steps': 5,  # number of steps to close this inventory
-            'alpha': 0.01/4  # affects the penalty
+            'alpha': 0.002  # affects how much we penalize our algorithm to sell big chunks of shares
             }
 
 # Create a trade execution environment with some random settings.
@@ -528,15 +523,26 @@ agent_settings = {'gamma': 0.99,
                   'greedy': [1.0, 0.01],
                   'environment': te_env,
                   'episodes': 1_000,  # 10_000 it's the param in DDQN
-                  'min_replay_size': 400,  # 5_000 it's the param in DDQN
-                  'replay_mini_batch': 200,  # 32 is the value used in DDQN
+                  'min_replay_size': 500,  # 5_000 it's the param in DDQN
+                  'replay_mini_batch': 32,  # 32 is the value used in DDQN, and seems the most generic one
                   'nn_copy_cadency': 15,  # every how many episodes q_policy gets copied to q_target
                   'nn_architecture': network_architecture,
-                  'soft_update': 0.5}
+                  'soft_update': 0.95}
 
 # Create our DDQN agent and train it
 ddqn_agent = DDQN(sett=agent_settings)
 rewards, losses = ddqn_agent.learn()
+
+# When using only qt and t as state variables, one can show the result is purely deterministic
+#
+
+# Once the agent is trained, study how it reacts to different values
+# inventory and time_to_expiry to see if it learned what we think it should
+# 1. for the same level of inventory, it should sell more shares the closer
+#   we are to the end of the interval.
+# 2. for the same time to end of interval, it should sell more shares with
+# increasing levels of inventory
+# ddqn_agent.choose_action(curr_greedy=1.0, state=, train=False)
 
 
 def twap_choose_action(curr_greedy, state, train):
@@ -548,6 +554,8 @@ print('Testing phase')
 agent_chooser = {'twap': twap_choose_action,
                  'ddqn': ddqn_agent.choose_action}
 
+# Just for testing purposes, we will implement an
+# agent that follows a TWAP strategy.
 episodes = 200
 for agent in agent_chooser.keys():
     for trie in range(episodes):
@@ -558,23 +566,9 @@ for agent in agent_chooser.keys():
             action = agent_chooser[agent](
                 curr_greedy=0.01, state=state, train=False)
             obs, reward, done, _, info = te_env.step(action)
-            history.append(list(obs[0, :])+list([action]) +
+            history.append(list(state[0, :])+list([action]) +
                            list([reward, agent, trie]))
 
         print(f'progress...{trie+1}/{episodes}')
 
 results = format_history(history)
-
-# TO-DO: Maybe we are using a value of alpha that is too low? We are not penalizing enough
-# the bulk sell of shares??
-
-# TO-DO: Once the agent is trained, study how it reacts to different values
-# inventory and time_to_expiry to see if it learned what we think it should
-# 1. for the same level of inventory, it should sell more shares the closer
-#   we are to the end of the interval.
-# 2. for the same time to end of interval, it should sell more shares with
-# increasing levels of inventory
-# ddqn_agent.choose_action(curr_greedy=1.0, state=, train=False)
-
-# Just for testing purposes, we will implement an
-# agent that follows a TWAP strategy.
