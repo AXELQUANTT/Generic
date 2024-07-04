@@ -220,7 +220,13 @@ class TradingEnv(gym.Env):
 
         # If our inventory gets to 0 or we don't have more time to unfold our position,
         # we consider the episode to be finished
-        if self.t == 0 or self.qt == 0:
+        if self.qt == 0:
+            self.done = True
+
+        if self.t == 0:
+            # If we get to the last step, we have used the mid price of data_idx+1
+            # that is why we have to update self.data_idx
+            self.data_idx += 1
             self.done = True
 
         # Note here observation needs to be the state s' which we have
@@ -483,7 +489,7 @@ class DDQN():
             # not the algorithm figure out that selling a lot of shares on an early
             # point is not the best. Seems to me this is a way to reduce the exploration
             # phase substantially => try with letting the algo pick any qt available
-            return binom(qt, 1.0/t).rvs()
+            return binom(qt, self.env.dt/t).rvs()
 
         # Exploitation
         # Compute the q-value from all the possible actions [0,qt] and retrieve the action
@@ -499,14 +505,15 @@ class DDQN():
 path = "/home/axelbm23/Code/AlgoTrading/RL/TradeExecution/data/1-09-1-20.csv"
 df = load_data(path)
 
-settings = {'T': 15,  # time left to close our position, in seconds
-            'Inventory': 10,  # Initial inventory
-            'Steps': 5  # number of steps to close this inventory
+settings = {'t': 3600,  # time left to close our position, in seconds
+            'inventory': 100,  # Initial inventory
+            'steps': 5,  # number of steps to close this inventory
+            'alpha': 0.01/4  # affects the penalty
             }
 
 # Create a trade execution environment with some random settings.
-te_env = TradingEnv(data=df, T=settings['T'], q0=settings['Inventory'],
-                    N=settings['Steps'])
+te_env = TradingEnv(data=df, T=settings['t'], q0=settings['inventory'],
+                    N=settings['steps'], alpha=settings['alpha'])
 
 network_architecture = {'neurons': [30]*5,  # same params as DDQN paper
                         'lambda': 0.01,  # set to the default value for now
@@ -521,8 +528,8 @@ agent_settings = {'gamma': 0.99,
                   'greedy': [1.0, 0.01],
                   'environment': te_env,
                   'episodes': 1_000,  # 10_000 it's the param in DDQN
-                  'min_replay_size': 200,  # 5_000 it's the param in DDQN
-                  'replay_mini_batch': 100,  # 32 is the value used in DDQN
+                  'min_replay_size': 400,  # 5_000 it's the param in DDQN
+                  'replay_mini_batch': 200,  # 32 is the value used in DDQN
                   'nn_copy_cadency': 15,  # every how many episodes q_policy gets copied to q_target
                   'nn_architecture': network_architecture,
                   'soft_update': 0.5}
@@ -530,8 +537,6 @@ agent_settings = {'gamma': 0.99,
 # Create our DDQN agent and train it
 ddqn_agent = DDQN(sett=agent_settings)
 rewards, losses = ddqn_agent.learn()
-
-# Right now
 
 
 def twap_choose_action(curr_greedy, state, train):
@@ -553,7 +558,7 @@ for agent in agent_chooser.keys():
             action = agent_chooser[agent](
                 curr_greedy=0.01, state=state, train=False)
             obs, reward, done, _, info = te_env.step(action)
-            history.append(list(obs[0, :])+list(action) +
+            history.append(list(obs[0, :])+list([action]) +
                            list([reward, agent, trie]))
 
         print(f'progress...{trie+1}/{episodes}')
