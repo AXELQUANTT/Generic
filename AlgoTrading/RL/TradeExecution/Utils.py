@@ -1,5 +1,6 @@
 from collections import deque
 import datetime
+import glob
 from gymnasium import spaces
 from gymnasium.core import RenderFrame
 import gymnasium as gym
@@ -7,6 +8,7 @@ from itertools import groupby
 import keras
 import matplotlib.pyplot as plt
 import numpy as np
+import os
 import pandas as pd
 import random
 import tensorflow as tf
@@ -21,28 +23,66 @@ from typing import Any
 from typing import SupportsFloat
 
 
-def load_data(path: str, data_points: int = 0) -> pd.DataFrame:
-    """
-    Function devoted to import the data and format it accordingly
-    """
+def plot(data: list, title: str, mavg: bool) -> None:
+    serie = pd.Series(data)
+    if mavg:
+        mavg = serie.rolling(window=15).mean()
+    plt.plot(serie)
+    plt.plot(mavg)
+    plt.title(title)
+    plt.show()
 
-    # col_labels = ['Index', 'Timestamp', 'Datetime']
-    # side_labels = [f'{side}{att}{i}' for side in ['b','a'] for i in range(10) for att in ['p','q']]
-    col_labels = ['Timestamp', 'bp0', 'bq0', 'ap0', 'aq0']
-    df = pd.read_csv(path, nrows=data_points if data_points > 0 else None, usecols=[1, 3, 4, 23, 24],
-                     names=col_labels, header=0)
 
-    # Convert the Timestamp into a datetime
-    df['datetime'] = df['Timestamp'].apply(
-        lambda x: datetime.datetime.fromtimestamp(x/1e3))
-    df['mp'] = 0.5*(df['bp0']+df['ap0'])
+def aggregate_data(df: pd.DataFrame) -> pd.DataFrame:
 
-    # Return only the needed columns
-    return df[['datetime', 'mp']]
+    # Generate equally sampled intervals of granularity
+    # from min_dt and max_dt
+    df['datetime(s)'] = df['datetime'].apply(
+        lambda x: x.replace(microsecond=0))
+    # Compute min and max
+    min_dt = df['datetime(s)'].min()
+    max_dt = df['datetime(s)'].max()
+    df = df.groupby(['datetime(s)']).last().reset_index()[
+        ['datetime(s)', 'mp']]
+    new_df = pd.DataFrame(pd.date_range(
+        start=min_dt, end=max_dt, freq='1s'), columns=['datetime(s)'])
+    new_df = pd.merge(new_df, df, left_on='datetime(s)',
+                      right_on='datetime(s)')
+
+    # if there's any nan in df, fill it with the last value
+    new_df.ffill(inplace=True)
+
+    return new_df
+
+
+def load_btcusd(path: str,  output_csv: str):
+    if not os.path.exists(output_csv):
+        files = glob.glob(path)
+        entire_data = []
+        for file in files:
+            df = pd.read_csv(file)
+            df['datetime'] = df['transaction_time'].apply(
+                lambda x: datetime.datetime.fromtimestamp(x/1_000))
+            df['mp'] = 0.5*(df['best_bid_price']+df['best_ask_price'])
+            df = aggregate_data(df[['datetime', 'mp']])
+            entire_data.append(df)
+
+        # Remove duplicates if any
+        df = pd.concat(entire_data)
+        df.drop_duplicates(inplace=True)
+        df.sort_values('datetime(s)', inplace=True)
+        df.to_csv(output_csv)
+    else:
+        df = pd.read_csv(output_csv)
+    return df
 
 
 def format_history(hist: list[tuple]) -> pd.DataFrame:
     return pd.DataFrame(hist, columns=['qt', 't', 'action', 'reward', 'algo', 'episode'])
+
+
+def twap_choose_action(curr_greedy, state, train):
+    return int(te_env.q0/te_env.N)
 
 
 def create_nn(input_size: int,
@@ -147,15 +187,20 @@ class TradingEnv(gym.Env):
                                             high=np.array([self.q0, self.T]),
                                             dtype=np.float64)
 
-    def reset(self) -> tuple[Any, dict[str, Any]]:
+    def reset(self, id: int = 0) -> tuple[Any, dict[str, Any]]:
         self.qt = self.q0
         self.t = self.T
         self.done = False
+        # in case the user provides it, the environment gets reset to this specific
+        # timestamp
+        if id > 0:
+            if id > self.data.shape[0]-1:
+                raise ValueError(f'Provided index is out of bounds, df.size={self.data.shape[0]},'
+                                 f' index={id}')
+            self.data_idx = id
 
         info = {'Inventory': self.qt,
-                'Time_to_execute': self.t,
-                'p_init': 0,
-                'p_last_step': 0}
+                'Time_to_execute': self.t}
 
         return self.extract_state(), info
 
@@ -203,29 +248,28 @@ class TradingEnv(gym.Env):
             self.data_idx += 1
             self.qt -= shs_per_interval
 
-        self.qt = int(self.qt)
         # Since we are assuming that shares are sold evenly during the entire interval
-        # it may be the case that due to rounding error self.qt != self.prev_qt. Adjust it
-        if self.qt != prev_qt-self.action:
-            self.qt = int(prev_qt-self.action)
+        # it may be the case that due to rounding error self.qt != self.prev_qt - action.
+        self.qt = int(prev_qt-self.action)
 
         # Update time left to execute
         self.t -= self.dt
 
         # Distribute some printing information
         info = {'Inventory': self.qt,
-                'Time_to_execute': self.t,
-                'p_init': 0 if self.t != 0 else self._get_mid_price(self.data_idx),
-                'p_last_step': 0 if self.t != 0 else self._get_mid_price(self.data_idx+1)}
+                'Time_to_execute': self.t}
 
         # If our inventory gets to 0 or we don't have more time to unfold our position,
         # we consider the episode to be finished
         if self.qt == 0:
             self.done = True
 
-        if self.t == 0:
-            # If we get to the last step, we have used the mid price of data_idx+1
-            # that is why we have to update self.data_idx
+        elif self.t == 0:
+            # If we get to the last step, add big penalty to close all remaining shares
+            curr_price = self._get_mid_price(self.data_idx)
+            next_price = self._get_mid_price(self.data_idx+1)
+            reward += self.qt*(next_price-curr_price) - \
+                self.alpha*(self.qt**2)
             self.data_idx += 1
             self.done = True
 
@@ -242,9 +286,10 @@ class ExpirienceReplay:
         self._buffer = deque(maxlen=maxlen)
         self.mini_batch = mini_batch
 
-    def push(self, state, action, reward, next_state, terminated, p_init, p_last_step):
+    # , p_init, p_last_step):
+    def push(self, state, action, reward, next_state, terminated):
         self._buffer.append(
-            (state, action, reward, next_state, terminated, p_init, p_last_step))
+            (state, action, reward, next_state, terminated))
 
     def _get_batch(self):
         return random.sample(self._buffer, self.mini_batch)
@@ -258,10 +303,8 @@ class ExpirienceReplay:
         rewards = np.array([x[2] for x in batch]).reshape(len(batch), 1)
         next_states = np.array([x[3] for x in batch])[:, 0, :]
         terminated = np.array([x[4] for x in batch]).reshape(len(batch), 1)
-        p_inits = np.array([x[5] for x in batch]).reshape(len(batch), 1)
-        p_last_steps = np.array([x[6] for x in batch]).reshape(len(batch), 1)
 
-        return states, actions, rewards, next_states, terminated, p_inits, p_last_steps
+        return states, actions, rewards, next_states, terminated
 
     def buffer_size(self):
         return len(self._buffer)
@@ -281,6 +324,7 @@ class DDQN():
         self.env = sett['environment']
         self.episodes = sett['episodes']
         self.min_replay_size = sett['min_replay_size']
+        self.replay_mini_batch = sett['replay_mini_batch']
         # The replay will contain four elements:
         # state => nx1 dimensional array containing all the quantities
         #         that constitute a state
@@ -335,12 +379,12 @@ class DDQN():
         """
 
         # First get all the data from the replay buffer
-        states, actions, rewards, next_states, dones, p_init, p_last_step = self.replay_buffer.get_arrays_from_batch()
+        states, actions, rewards, next_states, dones, = self.replay_buffer.get_arrays_from_batch()
 
         # Create the input for the NN adding the action to the state
         x = self._compute_input(states, actions)
         y = self._compute_targets(
-            states, actions, rewards, next_states, p_init, p_last_step)
+            states, actions, rewards, next_states)
 
         return x, y
 
@@ -350,7 +394,7 @@ class DDQN():
         of the policy and the target networks
         """
 
-        if self.replay_buffer.buffer_size() < self.min_replay_size:
+        if self.replay_buffer.buffer_size() < self.replay_mini_batch:
             # Ensure that we have enough data to start training
             return 0
 
@@ -387,7 +431,7 @@ class DDQN():
                 # Save all the needed quantites in our replay buffer. In order to do so, we'll
                 # use Tensorflow replay buffer
                 self.replay_buffer.push(
-                    s, action, reward, s_prime, done, info['p_init'], info['p_last_step'])
+                    s, action, reward, s_prime, done)
                 ep_reward += reward
                 # After we have created a new data_point, update our networks in case
                 # it's needed
@@ -438,7 +482,7 @@ class DDQN():
 
         return np.append(states, actions, axis=1)
 
-    def _compute_targets(self, states, actions, rewards, next_states, p_init, p_last_step):
+    def _compute_targets(self, states, actions, rewards, next_states):
         """
         Auxiliary function devoted to compute the y-values for the networks
         """
@@ -451,11 +495,13 @@ class DDQN():
         max_q_val = np.array([q_val[x_next_states[:, 0] == i].max()
                               for i, _ in groupby(x_next_states[:, 0])]).reshape(len(states), 1)
 
-        r_last_step = next_states[:, 0] * (p_last_step[:, 0] -
-                                           p_init[:, 0]) - self.env.alpha*next_states[:, 0]**2
+        y = rewards[:, 0] + + self.gamma * \
+            (states[:, 1] > self.env.dt).astype(int)*max_q_val[:, 0]
+        # r_last_step = next_states[:, 0] * (p_last_step[:, 0] -
+        #                                   p_init[:, 0]) - self.env.alpha*next_states[:, 0]**2
 
-        y = rewards[:, 0] + self.gamma*(states[:, 1] > self.env.dt).astype(
-            int)*max_q_val[:, 0] + self.gamma*(states[:, 1] == self.env.dt).astype(int)*r_last_step
+        # y = rewards[:, 0] + self.gamma*(states[:, 1] > self.env.dt).astype(
+        #    int)*max_q_val[:, 0] + self.gamma*(states[:, 1] == self.env.dt).astype(int)*r_last_step
 
         return y
 
@@ -489,21 +535,49 @@ class DDQN():
         # Exploitation
         # Compute the q-value from all the possible actions [0,qt] and retrieve the action
         # that delivers the best overall q-value
-        x = self._compute_input(state)
+        x = self._compute_input(states=state)
         # Remember that the first element of x is just a mute index
         predictions = self.policy_nn.predict(x[:, 1:], verbose=0)
         best_action = np.argmax(predictions)
 
         return best_action
 
+# LEAVE ALL THE FOLLOWING PARAMS UNTOUCHED
+# replay_mini_batch => 32
+# min_replay_size => 500
+# episodes => 2_500
+# soft_update => 0.99
+# copy_cadency => 30
 
-path = "/home/axelbm23/Code/AlgoTrading/RL/TradeExecution/data/1-09-1-20.csv"
-df = load_data(path)
+# 0.001 => sells all of them at the beginning of the interval
+# 0.005 => sells all of them at the beginning of the interval
+# 0.01 => too big, it sells all shares at the beginning of the interval
+# 0.025 => too big, it sells all shares at the beginning of the interval
+# 0.035 => too big, it sells all shares at the beginning of the interval
+
+# So, it seems clear at this point that the algorithm is prefering to sell
+# all shares at the beginning of the interval
+
+# Changed logic so that we can start learning as soon as we have replay_mini_batch
+# (instead of min_replay_size)
+
+# Issues and limitations
+# The first and most important one, is the huge dependency of the
+# results in the latent parameter alpha. Small changes in the value of alpha
+# translate to huge differences in the adopted policy by our agent.
+# This can be linked to the fact that we are
+
+
+# path = "/home/axelbm23/Code/AlgoTrading/RL/TradeExecution/data/1-09-1-20.csv"
+path = "/home/axelbm23/Code/AlgoTrading/data/BTCUSD_PERP*.csv"
+output_csv = f'{"/".join(path.split("/")[:-1])}/BTCUSD_PERP_agg_data.csv'
+df = load_btcusd(path, output_csv)
 
 settings = {'t': 60,  # time left to close our position, in seconds
             'inventory': 20,  # Initial inventory
             'steps': 5,  # number of steps to close this inventory
-            'alpha': 0.002  # affects how much we penalize our algorithm to sell big chunks of shares
+            # affects how much we penalize our algorithm to sell big chunks of shares.
+            'alpha': 0.01
             }
 
 # Create a trade execution environment with some random settings.
@@ -522,19 +596,23 @@ network_architecture = {'neurons': [30]*5,  # same params as DDQN paper
 agent_settings = {'gamma': 0.99,
                   'greedy': [1.0, 0.01],
                   'environment': te_env,
-                  'episodes': 1_000,  # 10_000 it's the param in DDQN
-                  'min_replay_size': 500,  # 5_000 it's the param in DDQN
+                  'episodes': 2_000,  # 10_000 it's the param in DDQN
+                  'min_replay_size': 5000,  # 5_000 it's the param in DDQN
                   'replay_mini_batch': 32,  # 32 is the value used in DDQN, and seems the most generic one
                   'nn_copy_cadency': 15,  # every how many episodes q_policy gets copied to q_target
                   'nn_architecture': network_architecture,
-                  'soft_update': 0.95}
+                  'soft_update': 0.99}
+
 
 # Create our DDQN agent and train it
 ddqn_agent = DDQN(sett=agent_settings)
 rewards, losses = ddqn_agent.learn()
 
-# When using only qt and t as state variables, one can show the result is purely deterministic
-#
+plot(data=rewards, title='rewards vs 15 period mavg', mavg=True)
+plot(data=losses, title='losses vs 15 period mavg', mavg=True)
+
+# When using only qt and t as state variables,
+# one can show the result is purely deterministic
 
 # Once the agent is trained, study how it reacts to different values
 # inventory and time_to_expiry to see if it learned what we think it should
@@ -542,12 +620,6 @@ rewards, losses = ddqn_agent.learn()
 #   we are to the end of the interval.
 # 2. for the same time to end of interval, it should sell more shares with
 # increasing levels of inventory
-# ddqn_agent.choose_action(curr_greedy=1.0, state=, train=False)
-
-
-def twap_choose_action(curr_greedy, state, train):
-    return int(te_env.q0/te_env.N)
-
 
 history = []
 print('Testing phase')
@@ -557,7 +629,10 @@ agent_chooser = {'twap': twap_choose_action,
 # Just for testing purposes, we will implement an
 # agent that follows a TWAP strategy.
 episodes = 200
+current_data_idx = te_env.data_idx
 for agent in agent_chooser.keys():
+    # Make sure that both agents are run over the exact same data
+    te_env.reset(current_data_idx)
     for trie in range(episodes):
         te_env.reset()
         done = False
