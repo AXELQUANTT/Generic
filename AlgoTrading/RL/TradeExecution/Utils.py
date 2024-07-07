@@ -1,6 +1,7 @@
 from collections import deque
 import datetime
 import glob
+# from stable_baselines3.common.evaluation import evaluate_policy
 from gymnasium import spaces
 from gymnasium.core import RenderFrame
 import gymnasium as gym
@@ -10,8 +11,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 import os
 import pandas as pd
+from stable_baselines3 import PPO
 import random
 import tensorflow as tf
+from tf_agents.agents.dqn.dqn_agent import DdqnAgent
 from keras.optimizers import Adam
 from keras.losses import MeanSquaredError
 from keras.layers import Dense
@@ -69,7 +72,11 @@ def load_btcusd(path: str,  output_csv: str):
 
         # Remove duplicates if any
         df = pd.concat(entire_data)
+        # Finally compute the diff between mid prices (will speed calculations
+        # later on)
+        df['mp_diff'] = -1*df['mp'].diff(-1)
         df.drop_duplicates(inplace=True)
+        df.reset_index(inplace=True, drop=True)
         df.sort_values('datetime(s)', inplace=True)
         df.to_csv(output_csv)
     else:
@@ -78,7 +85,7 @@ def load_btcusd(path: str,  output_csv: str):
 
 
 def format_history(hist: list[tuple]) -> pd.DataFrame:
-    return pd.DataFrame(hist, columns=['qt', 't', 'action', 'reward', 'algo', 'episode'])
+    return pd.DataFrame(hist, columns=['qt', 't', 'action', 'reward', 'algo', 'df_idx', 'episode'])
 
 
 def twap_choose_action(curr_greedy, state, train):
@@ -219,6 +226,9 @@ class TradingEnv(gym.Env):
     def _get_mid_price(self, idx: int) -> float:
         return self.data.loc[idx, 'mp']
 
+    def _get_mp_diff(self, idx: int) -> float:
+        return self.data.loc[idx, 'mp_diff']
+
     def step(self, action: Any) -> tuple[Any, SupportsFloat, bool, bool, dict[str, Any]]:
 
         # This is where we define of how the environment reacts
@@ -236,14 +246,14 @@ class TradingEnv(gym.Env):
 
         # We need to iterate over all sub-intervals comprised
         # between self.t and end_t
+        reward_old = 0
         reward = 0
         prev_qt = self.qt
         shs_per_interval = self.action/self.mk
 
         for _ in range(self.mk):
-            curr_price = self._get_mid_price(self.data_idx)
-            next_price = self._get_mid_price(self.data_idx+1)
-            reward += self.qt*(next_price-curr_price) - \
+            reward += self.qt * \
+                self._get_mp_diff(self.data_idx) - \
                 self.alpha*shs_per_interval**2
             self.data_idx += 1
             self.qt -= shs_per_interval
@@ -251,7 +261,6 @@ class TradingEnv(gym.Env):
         # Since we are assuming that shares are sold evenly during the entire interval
         # it may be the case that due to rounding error self.qt != self.prev_qt - action.
         self.qt = int(prev_qt-self.action)
-
         # Update time left to execute
         self.t -= self.dt
 
@@ -265,11 +274,11 @@ class TradingEnv(gym.Env):
             self.done = True
 
         elif self.t == 0:
-            # If we get to the last step, add big penalty to close all remaining shares
-            curr_price = self._get_mid_price(self.data_idx)
-            next_price = self._get_mid_price(self.data_idx+1)
-            reward += self.qt*(next_price-curr_price) - \
-                self.alpha*(self.qt**2)
+            # If we get to the last step, add big penalty for all the remaining
+            # shares that we have
+            reward += self.qt * \
+                self._get_mp_diff(self.data_idx) - \
+                self.alpha*shs_per_interval**2
             self.data_idx += 1
             self.done = True
 
@@ -379,7 +388,7 @@ class DDQN():
         """
 
         # First get all the data from the replay buffer
-        states, actions, rewards, next_states, dones, = self.replay_buffer.get_arrays_from_batch()
+        states, actions, rewards, next_states, dones = self.replay_buffer.get_arrays_from_batch()
 
         # Create the input for the NN adding the action to the state
         x = self._compute_input(states, actions)
@@ -495,13 +504,8 @@ class DDQN():
         max_q_val = np.array([q_val[x_next_states[:, 0] == i].max()
                               for i, _ in groupby(x_next_states[:, 0])]).reshape(len(states), 1)
 
-        y = rewards[:, 0] + + self.gamma * \
+        y = rewards[:, 0] + self.gamma * \
             (states[:, 1] > self.env.dt).astype(int)*max_q_val[:, 0]
-        # r_last_step = next_states[:, 0] * (p_last_step[:, 0] -
-        #                                   p_init[:, 0]) - self.env.alpha*next_states[:, 0]**2
-
-        # y = rewards[:, 0] + self.gamma*(states[:, 1] > self.env.dt).astype(
-        #    int)*max_q_val[:, 0] + self.gamma*(states[:, 1] == self.env.dt).astype(int)*r_last_step
 
         return y
 
@@ -611,6 +615,16 @@ rewards, losses = ddqn_agent.learn()
 plot(data=rewards, title='rewards vs 15 period mavg', mavg=True)
 plot(data=losses, title='losses vs 15 period mavg', mavg=True)
 
+# Train DDQN from tensorflow
+te_env = TradingEnv(data=df, T=settings['t'], q0=settings['inventory'],
+                    N=settings['steps'], alpha=settings['alpha'])
+tf_ddqn = DdqnAgent(q_network=create_nn(network_architecture),  # policy_network,
+                    target_q_network=create_nn(network_architecture),
+                    optimizer=network_architecture['optimizer'],
+                    target_update_period=agent_settings['soft_update'],
+                    gamma=agent_settings['gamma'],
+                    td_errors_loss_fn=network_architecture['loss'])
+
 # When using only qt and t as state variables,
 # one can show the result is purely deterministic
 
@@ -642,7 +656,7 @@ for agent in agent_chooser.keys():
                 curr_greedy=0.01, state=state, train=False)
             obs, reward, done, _, info = te_env.step(action)
             history.append(list(state[0, :])+list([action]) +
-                           list([reward, agent, trie]))
+                           list([reward, agent, te_env.data_idx, trie]))
 
         print(f'progress...{trie+1}/{episodes}')
 
