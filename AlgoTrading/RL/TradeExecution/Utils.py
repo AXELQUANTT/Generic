@@ -316,6 +316,7 @@ class DDQN():
         if self.target_nn_initialized:
             # If weights are still the initial ones, just set them
             # to the new weights
+            print(f'Setting target_weights to policy_weights')
             self.target_nn.set_weights(new_weights)
             self.target_nn_initialized = False
             return 
@@ -324,6 +325,7 @@ class DDQN():
             # Check if episode is the one in which we need to copy it
             if ep % (self.copy_cadency-1) == 0.0:
                 if not(self.already_copied):
+                    print(f'Setting target_weights to policy_weights')
                     self.target_nn.set_weights(new_weights)
                     self._already_copied=True
                 return
@@ -331,10 +333,10 @@ class DDQN():
             self.already_copied = False
         
         # if self.copy_cadency is None, it means we need to update via Tau (soft_update)
+        print(f'Setting target_weights to policy_weights usign TAU!!')
         target_weights = list((1-self.soft_update)*old_weights[idx]+\
                             self.soft_update*new_weights[idx] for idx in range(len(new_weights)))
         self.target_nn.set_weights(target_weights)
-        return
         
 
     def _compute_regressors_targets(self):
@@ -358,8 +360,7 @@ class DDQN():
 
     def _agent_update(self) -> float:
         """
-        Main function devoted to update the params
-        of the policy and the target networks
+        Main function devoted to update params of the policy network
         """
 
         if self.replay_buffer.buffer_size() < self.replay_mini_batch:
@@ -412,12 +413,8 @@ class DDQN():
                     # it's needed
                     loss += self._agent_update()
                     history.append([s, action, reward, s_prime, self.env.data_idx])
-
-                    if pre_ep % (self.copy_cadency-1) == 0.0:
-                        print('Copying weights from policy to target')
-                        # Finally assign the weights from our policy nn (now trained)
-                        # to the target nn
-                        self._soft_update_policy(pre_ep)
+                    # Update target (if needed)
+                    self._soft_update_policy(pre_ep)
 
                 # Change the pre-training mode
                 if mode == 'start':
@@ -644,7 +641,7 @@ agent_settings = {'gamma': 0.9,
                   'greedy_uniform': True,
                   'environment': env,
                   'episodes': 100,  # 10_000 it's the param in DDQN
-                  'min_replay_size': 500,  # 5_000 it's the param in DDQN
+                  'min_replay_size': 50,  # 5_000 it's the param in DDQN
                   'replay_mini_batch': 16,  # 32 is the value used in DDQN, and seems the most generic one
                   'nn_copy_cadency': None,  # every how many episodes q_policy gets copied to q_target
                   'nn_architecture': network_architecture,
