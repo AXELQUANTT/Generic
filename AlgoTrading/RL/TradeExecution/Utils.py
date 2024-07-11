@@ -1,118 +1,53 @@
 from collections import deque
-import datetime
-import glob
-# from stable_baselines3.common.evaluation import evaluate_policy
 from gymnasium import spaces
 from gymnasium.core import RenderFrame
 import gymnasium as gym
 from itertools import groupby
-import keras
 import matplotlib.pyplot as plt
 import numpy as np
-import os
 import pandas as pd
-from stable_baselines3 import PPO
 import random
-import tensorflow as tf
-from tf_agents.agents.dqn.dqn_agent import DdqnAgent
-from keras.optimizers import Adam
-from keras.losses import MeanSquaredError
-from keras.layers import Dense
-from keras.models import Sequential
-from keras.activations import relu, linear, leaky_relu
 from scipy.stats import binom
-import time
+import tensorflow as tf
+import tf_agents
+from tf_agents.agents.dqn.dqn_agent import DdqnAgent
+from tf_agents.environments import tf_py_environment
+from tf_agents.environments import suite_gym
+import tf_keras.activations
+from tf_keras.activations import relu,linear
 from typing import Any
 from typing import SupportsFloat
 
-
-def plot(data: list, title: str, mavg: bool) -> None:
-    serie = pd.Series(data)
-    if mavg:
-        mavg = serie.rolling(window=15).mean()
-    plt.plot(serie)
-    plt.plot(mavg)
-    plt.title(title)
-    plt.show()
-
-
-def aggregate_data(df: pd.DataFrame) -> pd.DataFrame:
-
-    # Generate equally sampled intervals of granularity
-    # from min_dt and max_dt
-    df['datetime(s)'] = df['datetime'].apply(
-        lambda x: x.replace(microsecond=0))
-    # Compute min and max
-    min_dt = df['datetime(s)'].min()
-    max_dt = df['datetime(s)'].max()
-    df = df.groupby(['datetime(s)']).last().reset_index()[
-        ['datetime(s)', 'mp']]
-    new_df = pd.DataFrame(pd.date_range(
-        start=min_dt, end=max_dt, freq='1s'), columns=['datetime(s)'])
-    new_df = pd.merge(new_df, df, left_on='datetime(s)',
-                      right_on='datetime(s)')
-
-    # if there's any nan in df, fill it with the last value
-    new_df.ffill(inplace=True)
-
-    return new_df
-
-
-def load_btcusd(path: str,  output_csv: str):
-    if not os.path.exists(output_csv):
-        files = glob.glob(path)
-        entire_data = []
-        for file in files:
-            df = pd.read_csv(file)
-            df['datetime'] = df['transaction_time'].apply(
-                lambda x: datetime.datetime.fromtimestamp(x/1_000))
-            df['mp'] = 0.5*(df['best_bid_price']+df['best_ask_price'])
-            df = aggregate_data(df[['datetime', 'mp']])
-            entire_data.append(df)
-
-        # Remove duplicates if any
-        df = pd.concat(entire_data)
-        # Finally compute the diff between mid prices (will speed calculations
-        # later on)
-        df['mp_diff'] = -1*df['mp'].diff(-1)
-        df.drop_duplicates(inplace=True)
-        df.reset_index(inplace=True, drop=True)
-        df.sort_values('datetime(s)', inplace=True)
-        df.to_csv(output_csv)
-    else:
-        df = pd.read_csv(output_csv)
-    return df
-
-
-def format_history(hist: list[tuple]) -> pd.DataFrame:
-    return pd.DataFrame(hist, columns=['qt', 't', 'action', 'reward', 'algo', 'df_idx', 'episode'])
-
-
-def twap_choose_action(curr_greedy, state, train):
-    return int(te_env.q0/te_env.N)
-
+def create_dense_layer(neurons:int,
+                 activation:tf_keras.activations=relu,
+                 l2_reg=None) -> tf_keras.layers.Dense:
+    
+    return tf.keras.layers.Dense(units=neurons, activation=activation, 
+                  kernel_regularizer=l2_reg)
 
 def create_nn(input_size: int,
               model_params: dict,
               output_size: int,
-              name: str) -> keras.Model:
+              name: str) -> tf_keras.Model:
 
     # Build the architecture
     tf.random.set_seed(1234)
-    model = Sequential()
-    model.name = name
-    model.add(keras.Input(shape=(input_size,)))
+    model = tf.keras.Sequential()
+    #if name!='':
+    #    model.name = name
+    if input_size!=0:
+        model.add(tf.keras.Input(shape=(input_size,)))
     for neurons in model_params['neurons']:
-        model.add(Dense(units=neurons, activation=relu,  # using leaky_relu instead of relu in order to avoid dying neuron issue in ReLU (acc to DDQN paper as well)
-                  kernel_regularizer=tf.keras.regularizers.l2(model_params['lambda'])))
+        model.add(create_dense_layer(neurons=neurons,
+                                     activation=relu))
 
     # Finally add the output layer
-    model.add(Dense(units=output_size, activation=linear))
+    model.add(create_dense_layer(neurons=output_size, activation=linear))
 
     # Configure the network => specify loss functiona and optimizer
+    #if compile:
     model.compile(loss=model_params['loss_function'],
-                  optimizer=model_params['optimizer'])
-    # run_eagerly=True)
+                    optimizer=model_params['optimizer'])
 
     return model
 
@@ -246,7 +181,6 @@ class TradingEnv(gym.Env):
 
         # We need to iterate over all sub-intervals comprised
         # between self.t and end_t
-        reward_old = 0
         reward = 0
         prev_qt = self.qt
         shs_per_interval = self.action/self.mk
@@ -297,6 +231,11 @@ class ExpirienceReplay:
 
     # , p_init, p_last_step):
     def push(self, state, action, reward, next_state, terminated):
+        # Make sure that state and next_state are 2d arrays
+        if state.ndim==1:
+            state = state.reshape(1,len(state))
+            next_state = next_state.reshape(1,len(next_state))
+        
         self._buffer.append(
             (state, action, reward, next_state, terminated))
 
@@ -306,7 +245,7 @@ class ExpirienceReplay:
     def get_arrays_from_batch(self):
         batch = self._get_batch()
 
-        # Format arrays into 2d to make them easier to manipulate
+        # Check the dimensionality of the states
         states = np.array([x[0] for x in batch])[:, 0, :]
         actions = np.array([x[1] for x in batch]).reshape(len(batch), 1)
         rewards = np.array([x[2] for x in batch]).reshape(len(batch), 1)
@@ -330,6 +269,7 @@ class DDQN():
 
         self.gamma = sett['gamma']
         self.greedy = sett['greedy']
+        self.unif = sett['greedy_uniform']
         self.env = sett['environment']
         self.episodes = sett['episodes']
         self.min_replay_size = sett['min_replay_size']
@@ -346,22 +286,26 @@ class DDQN():
             maxlen=self.min_replay_size, mini_batch=sett['replay_mini_batch'])
         # Create policy, used to extract actions, and target,
         # used to compute y_values, networks
+        self.action_as_in = sett['action_as_input']
 
-        self.policy_nn: keras.Model = create_nn(input_size=self.env.extract_state().shape[1]+1,
+        self.policy_nn: tf_keras.Model = create_nn(input_size=self.env.observation_space.shape[0]+1 if self.action_as_in else self.env.observation_space.shape[0],
                                                 model_params=sett['nn_architecture'],
                                                 output_size=sett['nn_architecture']['output_size'],
                                                 name='policy')
-        self.target_nn: keras.Model = create_nn(input_size=self.env.extract_state().shape[1]+1,
+        self.target_nn: tf_keras.Model = create_nn(input_size=self.env.observation_space.shape[0]+1 if self.action_as_in else self.env.observation_space.shape[0],
                                                 model_params=sett['nn_architecture'],
                                                 output_size=sett['nn_architecture']['output_size'],
                                                 name='target')
         self.target_nn_initialized = True
+        self.already_copied = False
         # Every how many episodes we copy the params from the policy
         # to the target network
         self.copy_cadency = sett['nn_copy_cadency']
         self.soft_update = sett['soft_update']
+        self.pretrain = sett['pretrain']
+        self.custom_exploration = sett['cust_exploration']
 
-    def _soft_update_policy(self) -> None:
+    def _soft_update_policy(self, ep:int) -> None:
         """
         Function that specifies how the the params of the policy network need
         to be transfered to the target network.
@@ -372,13 +316,26 @@ class DDQN():
         if self.target_nn_initialized:
             # If weights are still the initial ones, just set them
             # to the new weights
-            target_weights = new_weights
+            self.target_nn.set_weights(new_weights)
             self.target_nn_initialized = False
-        else:
-            target_weights = list(self.soft_update*old_weights[idx]+(
-                1.0-self.soft_update)*new_weights[idx] for idx in range(len(new_weights)))
-
+            return 
+        
+        if self.copy_cadency:
+            # Check if episode is the one in which we need to copy it
+            if ep % (self.copy_cadency-1) == 0.0:
+                if not(self.already_copied):
+                    self.target_nn.set_weights(new_weights)
+                    self._already_copied=True
+                return
+            
+            self.already_copied = False
+        
+        # if self.copy_cadency is None, it means we need to update via Tau (soft_update)
+        target_weights = list((1-self.soft_update)*old_weights[idx]+\
+                            self.soft_update*new_weights[idx] for idx in range(len(new_weights)))
         self.target_nn.set_weights(target_weights)
+        return
+        
 
     def _compute_regressors_targets(self):
         """
@@ -391,9 +348,11 @@ class DDQN():
         states, actions, rewards, next_states, dones = self.replay_buffer.get_arrays_from_batch()
 
         # Create the input for the NN adding the action to the state
-        x = self._compute_input(states, actions)
+        x = states
+        if self.action_as_in:
+            x = self._compute_input(states, actions)
         y = self._compute_targets(
-            states, actions, rewards, next_states)
+            states, rewards, next_states, dones)
 
         return x, y
 
@@ -408,19 +367,83 @@ class DDQN():
             return 0
 
         x, y = self._compute_regressors_targets()
-        history = self.policy_nn.fit(x, y, verbose=0)
-        return history.history['loss'][0]
+        # Checked and there is no difference between this and self.policy_nn.train_on_bacth (very subtle diff)
+        # history = self.policy_nn.fit(x, y, verbose=0)
+        history = self.policy_nn.train_on_batch(x, y)
+        return history.item()
 
-    # The main function of the class
+    def _pretrain(self) -> None:
+        """
+        Routine devoted to pre-train our agent in some corner cases, which
+        should improve network stability
+        """
+        # We'll pre_train the networks with selling all shares at the beginning of the interval
+        # and selling all shares just at the end of the interval. Both of them are deemed very bad
+        # practices, but will the data say so?
+
+        # If the pre-train has gone well, we should see that the chances of our policy network picking
+        # selling all shares at beginning is very low. On the other side, holding all shares
+        # until the last episode should also be hugely penalized, considering that the reward function
+        # is such that
+        if self.pretrain:
+            state = np.array([[self.env.q0, self.env.T]])
+            x = self._compute_input(states=state)
+            policy_start = self.policy_nn.predict(x[:, 1:], verbose=0)
+
+            mode = 'start'
+            history = []
+            for pre_ep in range(self.pretrain):
+                done = False
+                ep_reward = 0
+                loss = 0
+                s,_ = self.env.reset()
+                while not done:
+                    # Choose an action depending on the mode
+                    action = self.choose_action(
+                        state=s, curr_greedy=0.01, train=True, pretrain_mod=mode)
+                    # Get the action s_prime as result of taking action a in state s
+                    s_prime, reward, done, _, info = self.env.step(action)
+                    # Save all the needed quantites in our replay buffer. In order to do so, we'll
+                    # use Tensorflow replay buffer
+                    self.replay_buffer.push(
+                        s, action, reward, s_prime, done)
+                    ep_reward += reward
+                    # After we have created a new data_point, update our networks in case
+                    # it's needed
+                    loss += self._agent_update()
+                    history.append([s, action, reward, s_prime, self.env.data_idx])
+
+                    if pre_ep % (self.copy_cadency-1) == 0.0:
+                        print('Copying weights from policy to target')
+                        # Finally assign the weights from our policy nn (now trained)
+                        # to the target nn
+                        self._soft_update_policy(pre_ep)
+
+                # Change the pre-training mode
+                if mode == 'start':
+                    mode = 'end'
+                else:
+                    mode = 'start'
+
+            state = np.array([[self.env.q0, self.env.T]])
+            x = self._compute_input(states=state)
+            policy_end = self.policy_nn.predict(x[:, 1:], verbose=0)
+            return policy_start, policy_end
+        
+        return None,None
+
     def learn(self) -> list[float]:
+        """
+        Main function of the class devoted to train our agent with the data
+        """
+        # In case of pre_training activated, pre-train the networks
+        policy_start, policy_end = self._pretrain()
         tot_ep_rewards = [0]*self.episodes
         tot_ep_losses = [0]*self.episodes
+        history = []
         n = self.episodes-1
         for ep in range(self.episodes):
-            # Get the initial state
-            # Why is it that we always get tranches of 60 movements? Isn't it the case that we never sell all remaining shares at once?
-            print(f'Data_idx={self.env.data_idx}')
-            self.env.reset()
+            s,_ = self.env.reset()
             done = False
             ep_reward = 0
             greedy_param = ((n-ep)/n) * \
@@ -428,8 +451,8 @@ class DDQN():
             loss = 0
             print(
                 f'episode {ep}/{self.episodes-1}, greedy_param={round(greedy_param,3)}')
+            
             while not done:
-                s = self.env.extract_state()
                 # Choose an action => is in this part that we have to apply the greedy policy
                 # (in case we want to do it at all!). For sure this function needs to be dependant
                 # on the state we are in!!!
@@ -445,19 +468,16 @@ class DDQN():
                 # After we have created a new data_point, update our networks in case
                 # it's needed
                 loss += self._agent_update()
-
-            if ep % (self.copy_cadency-1) == 0.0:
-                print('Copying weights from policy to target')
-                # Finally assign the weights from our policy nn (now trained)
-                # to the target nn
-                self._soft_update_policy()
+                history.append([s, action, reward, s_prime]) #self.env.data_idx])
+                s = s_prime
+                self._soft_update_policy(ep)
 
             # Update the max_reward acquired on this episode.
             # Compute the mean squared loss on the policy network
             tot_ep_rewards[ep] = ep_reward
             tot_ep_losses[ep] = loss
 
-        return tot_ep_rewards, tot_ep_losses
+        return tot_ep_rewards, tot_ep_losses, history, policy_start, policy_end
 
     def _compute_input(self, states: np.array, actions: np.array = np.array([])) -> np.array:
         """
@@ -465,7 +485,6 @@ class DDQN():
         target and for the policy. If no actions are provided, it generates
         all the possible actions (0, qt) for the current state.
         """
-
         if actions.size == 0:
             x = np.array([])
             for idx, state in enumerate(states):
@@ -491,7 +510,7 @@ class DDQN():
 
         return np.append(states, actions, axis=1)
 
-    def _compute_targets(self, states, actions, rewards, next_states):
+    def _compute_targets(self, states, rewards, next_states, dones):
         """
         Auxiliary function devoted to compute the y-values for the networks
         """
@@ -499,17 +518,22 @@ class DDQN():
         # over states s'. Note that in general, q_values are just the output values
         # for a given input state s over all actions that can be taken
         # Note that we are computing the q values from our target_nn, not our policy_nn
-        x_next_states = self._compute_input(next_states)
-        q_val = self.target_nn.predict(x_next_states[:, 1:], verbose=0)
-        max_q_val = np.array([q_val[x_next_states[:, 0] == i].max()
+        if self.action_as_in:
+            x_next_states = self._compute_input(next_states)
+            q_val = self.target_nn.predict(x_next_states[:, 1:], verbose=0)
+            max_q_val = np.array([q_val[x_next_states[:, 0] == i].max()
                               for i, _ in groupby(x_next_states[:, 0])]).reshape(len(states), 1)
-
-        y = rewards[:, 0] + self.gamma * \
+            y = rewards[:, 0] + self.gamma * \
             (states[:, 1] > self.env.dt).astype(int)*max_q_val[:, 0]
+        else:
+            q_val = self.target_nn.predict(next_states, verbose=0)
+            max_q_val = np.amax(q_val,axis=1).reshape(len(q_val),1)
+            y = rewards[:,0] + (1-dones.astype(int))[:,0]*self.gamma * max_q_val[:, 0]
+            y = y.reshape(len(y),1)
 
         return y
 
-    def choose_action(self, curr_greedy: float, state: np.array, train: bool) -> float:
+    def choose_action(self, curr_greedy: float, state: np.array, train: bool, pretrain_mod: str = '') -> float:
         """
         Given an input state s, the agent will get the action it thinks
         is best suited for it. We have to differentiate between
@@ -524,140 +548,122 @@ class DDQN():
             so we only consider exploitation regime.
         """
 
-        rand = np.random.uniform()
-        # Remember state is a 2d np.array
-        qt, t = state[0, :]
-        if train and rand <= curr_greedy:
-            # Exploration
-            # Get a random trial from a binomial (qt , 1/time_to_expiry)
-            # Why are we enforcing on the exploration phase a TWAP approach? Should
-            # not the algorithm figure out that selling a lot of shares on an early
-            # point is not the best. Seems to me this is a way to reduce the exploration
-            # phase substantially => try with letting the algo pick any qt available
-            return binom(qt, self.env.dt/t).rvs()
+        match pretrain_mod:
+            case '':
+                rand = np.random.uniform()
+                if train and rand <= curr_greedy:
+                    # Exploration
+                    # Get a random trial from a binomial (qt , 1/time_to_expiry)
+                    # Why are we enforcing on the exploration phase a TWAP approach? Should
+                    # not the algorithm figure out that selling a lot of shares on an early
+                    # point is not the best. Seems to me this is a way to reduce the exploration
+                    # phase substantially => try with letting the algo pick any qt available
+                    if self.unif:
+                        return np.random.randint(low=self.env.action_space.start,high=self.env.action_space.n)
+                    
+                    qt, t = state[0, :]
+                    return self.custom_exploration(qt,t, self.env.dt)
+                            
 
-        # Exploitation
-        # Compute the q-value from all the possible actions [0,qt] and retrieve the action
-        # that delivers the best overall q-value
-        x = self._compute_input(states=state)
-        # Remember that the first element of x is just a mute index
-        predictions = self.policy_nn.predict(x[:, 1:], verbose=0)
-        best_action = np.argmax(predictions)
+                # Exploitation
+                # Compute the q-value from all the possible actions [0,qt] and retrieve the action
+                # that delivers the best overall q-value
+                if self.action_as_in:
+                    x = self._compute_input(states=state)
+                    # Remember that the first element of x is just a mute index
+                    predictions = self.policy_nn.predict(x[:, 1:], verbose=0)
+                else:
+                    predictions = self.policy_nn.predict(state.reshape(1,len(state)), verbose=0)
 
-        return best_action
+                best_action = np.argmax(predictions)
+                return best_action
+            case 'start':
+                if t == self.env.T:
+                    return self.env.q0
+                return 0
+            case 'end':
+                if t == self.env.dt:
+                    return self.env.q0
+                return 0
+            
+# Create the ddqn agent of tensorflow
+def initialize_ddqn_tf() -> DdqnAgent:
+    dense_layers_ax = [create_dense_layer(neurons=neuron) for neuron in network_architecture['neurons']]
+    dense_layers_ax.append(create_dense_layer(neurons=env.action_space.n,activation=linear))
+    q_net_ax = tf_agents.networks.sequential.Sequential(dense_layers_ax)
 
-# LEAVE ALL THE FOLLOWING PARAMS UNTOUCHED
-# replay_mini_batch => 32
-# min_replay_size => 500
-# episodes => 2_500
-# soft_update => 0.99
-# copy_cadency => 30
+    ddqn_tf = DdqnAgent(
+        train_env.time_step_spec(),
+        train_env.action_spec(),
+        q_network=q_net_ax,
+        optimizer=network_architecture['optimizer'],
+        td_errors_loss_fn=network_architecture['loss_function'],
+        target_update_period=agent_settings['nn_copy_cadency'])
+    
+    return ddqn_tf
 
-# 0.001 => sells all of them at the beginning of the interval
-# 0.005 => sells all of them at the beginning of the interval
-# 0.01 => too big, it sells all shares at the beginning of the interval
-# 0.025 => too big, it sells all shares at the beginning of the interval
-# 0.035 => too big, it sells all shares at the beginning of the interval
+def custom_exploration(qt,t,dt): 
+    return binom(qt, dt/t).rvs()
 
-# So, it seems clear at this point that the algorithm is prefering to sell
-# all shares at the beginning of the interval
+def format_logs(data: np.array) -> pd.DataFrame:
+    df = pd.DataFrame(
+        data, columns=['state', 'action', 'reward', 'state_prime', 'idx'])
+    df[['qt', 't']] = df['state'].apply(
+        lambda x: pd.Series(x[0]))
+    df[['qt_prime', 't_prime']] = df['state_prime'].apply(
+        lambda x: pd.Series(x[0]))
 
-# Changed logic so that we can start learning as soon as we have replay_mini_batch
-# (instead of min_replay_size)
+    df.drop(['state', 'state_prime'], axis=1, inplace=True)
 
-# Issues and limitations
-# The first and most important one, is the huge dependency of the
-# results in the latent parameter alpha. Small changes in the value of alpha
-# translate to huge differences in the adopted policy by our agent.
-# This can be linked to the fact that we are
+    return df[['qt', 't', 'action', 'reward', 'qt_prime', 't_prime', 'idx']]
 
+def plot(data: list, title: str, mavg: bool) -> None:
+    serie = pd.Series(data)
+    if mavg:
+        mavg = serie.rolling(window=15).mean()
+    plt.plot(serie)
+    plt.plot(mavg)
+    plt.title(title)
+    plt.show()
 
-# path = "/home/axelbm23/Code/AlgoTrading/RL/TradeExecution/data/1-09-1-20.csv"
-path = "/home/axelbm23/Code/AlgoTrading/data/BTCUSD_PERP*.csv"
-output_csv = f'{"/".join(path.split("/")[:-1])}/BTCUSD_PERP_agg_data.csv'
-df = load_btcusd(path, output_csv)
+# Create the gym environments and the agents
+env = gym.make("CartPole-v1")
+train_env = tf_py_environment.TFPyEnvironment(suite_gym.load('CartPole-v1'))
 
-settings = {'t': 60,  # time left to close our position, in seconds
-            'inventory': 20,  # Initial inventory
-            'steps': 5,  # number of steps to close this inventory
-            # affects how much we penalize our algorithm to sell big chunks of shares.
-            'alpha': 0.01
-            }
-
-# Create a trade execution environment with some random settings.
-te_env = TradingEnv(data=df, T=settings['t'], q0=settings['inventory'],
-                    N=settings['steps'], alpha=settings['alpha'])
-
+# SETTINGS
 network_architecture = {'neurons': [30]*5,  # same params as DDQN paper
                         'lambda': 0.01,  # set to the default value for now
-                        'output_size': 1,
-                        'loss_function': MeanSquaredError(),
+                        'output_size': env.action_space.n,
+                        'loss_function': tf.keras.losses.MeanSquaredError(),
                         # modified according to DDQN paper
-                        'optimizer': Adam(learning_rate=0.0001),
+                        'optimizer': tf.keras.optimizers.Adam(learning_rate=0.0001),
                         }
 
-# All settings for the agent are copied from DDQN paper
-agent_settings = {'gamma': 0.99,
+agent_settings = {'gamma': 0.9,
                   'greedy': [1.0, 0.01],
-                  'environment': te_env,
-                  'episodes': 2_000,  # 10_000 it's the param in DDQN
-                  'min_replay_size': 5000,  # 5_000 it's the param in DDQN
-                  'replay_mini_batch': 32,  # 32 is the value used in DDQN, and seems the most generic one
-                  'nn_copy_cadency': 15,  # every how many episodes q_policy gets copied to q_target
+                  'greedy_uniform': True,
+                  'environment': env,
+                  'episodes': 100,  # 10_000 it's the param in DDQN
+                  'min_replay_size': 500,  # 5_000 it's the param in DDQN
+                  'replay_mini_batch': 16,  # 32 is the value used in DDQN, and seems the most generic one
+                  'nn_copy_cadency': None,  # every how many episodes q_policy gets copied to q_target
                   'nn_architecture': network_architecture,
-                  'soft_update': 0.99}
+                  'soft_update': 0.01,
+                  'pretrain': 0,
+                  'action_as_input':False,
+                  'cust_exploration':custom_exploration}
 
+ddqn_axel = DDQN(sett=agent_settings)
+ddqn_tf = initialize_ddqn_tf()
 
-# Create our DDQN agent and train it
-ddqn_agent = DDQN(sett=agent_settings)
-rewards, losses = ddqn_agent.learn()
+# According to openai/gym/wiki
+# Considered solved when the average reward is greater than 
+# or equal to 195.0 over 100 consecutive trials.
+
+#Train ddqn implementation on the Cartpole environment
+rewards, losses, logs, pol_start, pol_end = ddqn_axel.learn()
+
+logs_df = format_logs(logs)
 
 plot(data=rewards, title='rewards vs 15 period mavg', mavg=True)
 plot(data=losses, title='losses vs 15 period mavg', mavg=True)
-
-# Train DDQN from tensorflow
-te_env = TradingEnv(data=df, T=settings['t'], q0=settings['inventory'],
-                    N=settings['steps'], alpha=settings['alpha'])
-tf_ddqn = DdqnAgent(q_network=create_nn(network_architecture),  # policy_network,
-                    target_q_network=create_nn(network_architecture),
-                    optimizer=network_architecture['optimizer'],
-                    target_update_period=agent_settings['soft_update'],
-                    gamma=agent_settings['gamma'],
-                    td_errors_loss_fn=network_architecture['loss'])
-
-# When using only qt and t as state variables,
-# one can show the result is purely deterministic
-
-# Once the agent is trained, study how it reacts to different values
-# inventory and time_to_expiry to see if it learned what we think it should
-# 1. for the same level of inventory, it should sell more shares the closer
-#   we are to the end of the interval.
-# 2. for the same time to end of interval, it should sell more shares with
-# increasing levels of inventory
-
-history = []
-print('Testing phase')
-agent_chooser = {'twap': twap_choose_action,
-                 'ddqn': ddqn_agent.choose_action}
-
-# Just for testing purposes, we will implement an
-# agent that follows a TWAP strategy.
-episodes = 200
-current_data_idx = te_env.data_idx
-for agent in agent_chooser.keys():
-    # Make sure that both agents are run over the exact same data
-    te_env.reset(current_data_idx)
-    for trie in range(episodes):
-        te_env.reset()
-        done = False
-        while not done:
-            state = te_env.extract_state()
-            action = agent_chooser[agent](
-                curr_greedy=0.01, state=state, train=False)
-            obs, reward, done, _, info = te_env.step(action)
-            history.append(list(state[0, :])+list([action]) +
-                           list([reward, agent, te_env.data_idx, trie]))
-
-        print(f'progress...{trie+1}/{episodes}')
-
-results = format_history(history)
