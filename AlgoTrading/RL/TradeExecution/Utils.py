@@ -9,6 +9,7 @@ import pandas as pd
 import random
 from scipy.stats import binom
 import tensorflow as tf
+import time
 import tf_agents
 from tf_agents.agents.dqn.dqn_agent import DdqnAgent
 from tf_agents.environments import tf_py_environment
@@ -31,7 +32,7 @@ def create_nn(input_size: int,
               name: str) -> tf_keras.Model:
 
     # Build the architecture
-    tf.random.set_seed(1234)
+    #tf.random.set_seed(1234)
     model = tf.keras.Sequential()
     #if name!='':
     #    model.name = name
@@ -240,6 +241,7 @@ class ExpirienceReplay:
             (state, action, reward, next_state, terminated))
 
     def _get_batch(self):
+        # TO-DO: Maybe substitute this with np.random.choice??
         return random.sample(self._buffer, self.mini_batch)
 
     def get_arrays_from_batch(self):
@@ -268,11 +270,15 @@ class DDQN():
                  sett: dict) -> None:
 
         self.gamma = sett['gamma']
+        # TO-DO: Maybe we should stop being greedy after a number of episodes. Otherwise
+        # we can never train the model with what it is learning as we always pick a random
+        # action => instead of the one that maximizes reward
         self.greedy = sett['greedy']
         self.unif = sett['greedy_uniform']
+        self.greedy_max_step = sett['greedy_max_step']
         self.env = sett['environment']
         self.episodes = sett['episodes']
-        self.min_replay_size = sett['min_replay_size']
+        self.buff_size = sett['buff_size']
         self.replay_mini_batch = sett['replay_mini_batch']
         # The replay will contain four elements:
         # state => nx1 dimensional array containing all the quantities
@@ -283,7 +289,7 @@ class DDQN():
         #                defined for state s_prime (arrived state after applying
         #                action a to state s)
         self.replay_buffer = ExpirienceReplay(
-            maxlen=self.min_replay_size, mini_batch=sett['replay_mini_batch'])
+            maxlen=self.buff_size, mini_batch=self.replay_mini_batch)
         # Create policy, used to extract actions, and target,
         # used to compute y_values, networks
         self.action_as_in = sett['action_as_input']
@@ -304,6 +310,7 @@ class DDQN():
         self.soft_update = sett['soft_update']
         self.pretrain = sett['pretrain']
         self.custom_exploration = sett['cust_exploration']
+        self.add_log = sett['add_logs']
 
     def _soft_update_policy(self, ep:int) -> None:
         """
@@ -316,7 +323,7 @@ class DDQN():
         if self.target_nn_initialized:
             # If weights are still the initial ones, just set them
             # to the new weights
-            print(f'Setting target_weights to policy_weights')
+            print(f'Hard copy policy_weights to target_weights')
             self.target_nn.set_weights(new_weights)
             self.target_nn_initialized = False
             return 
@@ -325,15 +332,14 @@ class DDQN():
             # Check if episode is the one in which we need to copy it
             if ep % (self.copy_cadency-1) == 0.0:
                 if not(self.already_copied):
-                    print(f'Setting target_weights to policy_weights')
+                    print(f'Hard copy policy_weights to target_weights')
                     self.target_nn.set_weights(new_weights)
-                    self._already_copied=True
+                    self.already_copied=True
                 return
             
             self.already_copied = False
         
         # if self.copy_cadency is None, it means we need to update via Tau (soft_update)
-        print(f'Setting target_weights to policy_weights usign TAU!!')
         target_weights = list((1-self.soft_update)*old_weights[idx]+\
                             self.soft_update*new_weights[idx] for idx in range(len(new_weights)))
         self.target_nn.set_weights(target_weights)
@@ -366,12 +372,18 @@ class DDQN():
         if self.replay_buffer.buffer_size() < self.replay_mini_batch:
             # Ensure that we have enough data to start training
             return 0
-
+        t0 = time.time()
         x, y = self._compute_regressors_targets()
-        # Checked and there is no difference between this and self.policy_nn.train_on_bacth (very subtle diff)
-        # history = self.policy_nn.fit(x, y, verbose=0)
+        t1 = time.time()
+        #print(f'time computing regressors={round(t1-t0,5)}')
+        # Checked and there is no difference between this and self.policy_nn.train_on_batch
+        # over a single epoch. Seems fit is way faster though.
         history = self.policy_nn.train_on_batch(x, y)
+        #history = self.policy_nn.fit(x,y,verbose=0)
+        t2 = time.time()
+        #print(f'time training on batch ={round(t2-t1,5)}')
         return history.item()
+        #return history.history['loss'][0]
 
     def _pretrain(self) -> None:
         """
@@ -435,21 +447,22 @@ class DDQN():
         """
         # In case of pre_training activated, pre-train the networks
         policy_start, policy_end = self._pretrain()
-        tot_ep_rewards = [0]*self.episodes
-        tot_ep_losses = [0]*self.episodes
+        tot_ep_rewards = []
+        tot_ep_losses = []
         history = []
-        n = self.episodes-1
+        n = self.episodes-1 if not self.greedy_max_step else self.greedy_max_step
+        step = 0
         for ep in range(self.episodes):
             s,_ = self.env.reset()
             done = False
             ep_reward = 0
-            greedy_param = ((n-ep)/n) * \
-                (self.greedy[0]-self.greedy[1]) + self.greedy[1]
+            #greedy_param = ((n-ep)/n) * \
+            #    (self.greedy[0]-self.greedy[1]) + self.greedy[1]
             loss = 0
-            print(
-                f'episode {ep}/{self.episodes-1}, greedy_param={round(greedy_param,3)}')
-            
+            #print(
+            #    f'episode {ep}/{self.episodes-1}, greedy_param={round(greedy_param,3)}')
             while not done:
+                greedy_param = max(((n-step)/n) *(self.greedy[0]-self.greedy[1]) + self.greedy[1],self.greedy[1])
                 # Choose an action => is in this part that we have to apply the greedy policy
                 # (in case we want to do it at all!). For sure this function needs to be dependant
                 # on the state we are in!!!
@@ -457,22 +470,28 @@ class DDQN():
                     state=s, curr_greedy=greedy_param, train=True)
                 # Get the action s_prime as result of taking action a in state s
                 s_prime, reward, done, _, info = self.env.step(action)
+                #print(f'time computing step={round(t3-t2,3)}')
                 # Save all the needed quantites in our replay buffer. In order to do so, we'll
                 # use Tensorflow replay buffer
                 self.replay_buffer.push(
                     s, action, reward, s_prime, done)
                 ep_reward += reward
-                # After we have created a new data_point, update our networks in case
-                # it's needed
+                # with an average of 1.8s per episode, _agent_update is the bottleneck of our execution
                 loss += self._agent_update()
-                history.append([s, action, reward, s_prime]) #self.env.data_idx])
+                if self.add_log:
+                    history.append([s, action, reward, s_prime])
                 s = s_prime
+                #print(f'time updating agent={round(t5-t4,3)}')
                 self._soft_update_policy(ep)
-
+                step +=1
+            
             # Update the max_reward acquired on this episode.
             # Compute the mean squared loss on the policy network
-            tot_ep_rewards[ep] = ep_reward
-            tot_ep_losses[ep] = loss
+            tot_ep_rewards.append(ep_reward)
+            tot_ep_losses.append(loss)
+            print(f'episode {ep}/{self.episodes-1}, greedy_param={round(greedy_param,3)}')
+            print(f'reward={ep_reward}')
+            print(f'avg_reward={round(sum(tot_ep_rewards)/len(tot_ep_rewards),3)}')
 
         return tot_ep_rewards, tot_ep_losses, history, policy_start, policy_end
 
@@ -516,18 +535,22 @@ class DDQN():
         # for a given input state s over all actions that can be taken
         # Note that we are computing the q values from our target_nn, not our policy_nn
         if self.action_as_in:
+            # TO_DO IMPORTANT!!! Check this. I think there is something wrong here!
+            # As it is right now, we are picking the action that delivers better results
+            # for the target network!!! This is wrong, we have to pick actions based
+            # on the policy network!!
             x_next_states = self._compute_input(next_states)
             q_val = self.target_nn.predict(x_next_states[:, 1:], verbose=0)
             max_q_val = np.array([q_val[x_next_states[:, 0] == i].max()
                               for i, _ in groupby(x_next_states[:, 0])]).reshape(len(states), 1)
             y = rewards[:, 0] + self.gamma * \
             (states[:, 1] > self.env.dt).astype(int)*max_q_val[:, 0]
-        else:
-            q_val = self.target_nn.predict(next_states, verbose=0)
-            max_q_val = np.amax(q_val,axis=1).reshape(len(q_val),1)
-            y = rewards[:,0] + (1-dones.astype(int))[:,0]*self.gamma * max_q_val[:, 0]
-            y = y.reshape(len(y),1)
-
+            return y
+            
+        q_val = self.target_nn.predict(next_states, verbose=0)
+        max_action = np.argmax(self.policy_nn.predict(next_states,verbose=0),axis=1)
+        max_q_val = q_val[np.arange(len(q_val)),[max_action]].T
+        y = rewards + np.multiply(self.gamma*max_q_val, 1-dones.astype(int))
         return y
 
     def choose_action(self, curr_greedy: float, state: np.array, train: bool, pretrain_mod: str = '') -> float:
@@ -571,7 +594,6 @@ class DDQN():
                     predictions = self.policy_nn.predict(x[:, 1:], verbose=0)
                 else:
                     predictions = self.policy_nn.predict(state.reshape(1,len(state)), verbose=0)
-
                 best_action = np.argmax(predictions)
                 return best_action
             case 'start':
@@ -604,7 +626,7 @@ def custom_exploration(qt,t,dt):
 
 def format_logs(data: np.array) -> pd.DataFrame:
     df = pd.DataFrame(
-        data, columns=['state', 'action', 'reward', 'state_prime', 'idx'])
+        data, columns=['state', 'action', 'reward', 'state_prime'])
     df[['qt', 't']] = df['state'].apply(
         lambda x: pd.Series(x[0]))
     df[['qt_prime', 't_prime']] = df['state_prime'].apply(
@@ -612,7 +634,7 @@ def format_logs(data: np.array) -> pd.DataFrame:
 
     df.drop(['state', 'state_prime'], axis=1, inplace=True)
 
-    return df[['qt', 't', 'action', 'reward', 'qt_prime', 't_prime', 'idx']]
+    return df[['qt', 't', 'action', 'reward', 'qt_prime', 't_prime']]
 
 def plot(data: list, title: str, mavg: bool) -> None:
     serie = pd.Series(data)
@@ -628,39 +650,54 @@ env = gym.make("CartPole-v1")
 train_env = tf_py_environment.TFPyEnvironment(suite_gym.load('CartPole-v1'))
 
 # SETTINGS
-network_architecture = {'neurons': [30]*5,  # same params as DDQN paper
-                        'lambda': 0.01,  # set to the default value for now
+network_architecture = {'neurons': [32]*1,  # same params as DDQN paper
                         'output_size': env.action_space.n,
                         'loss_function': tf.keras.losses.MeanSquaredError(),
                         # modified according to DDQN paper
-                        'optimizer': tf.keras.optimizers.Adam(learning_rate=0.0001),
+                        'optimizer': tf.keras.optimizers.Adam(learning_rate=0.001),
                         }
 
-agent_settings = {'gamma': 0.9,
+agent_settings = {'gamma': 0.99,
                   'greedy': [1.0, 0.01],
                   'greedy_uniform': True,
+                  'greedy_max_step': 1_000,
                   'environment': env,
                   'episodes': 100,  # 10_000 it's the param in DDQN
-                  'min_replay_size': 50,  # 5_000 it's the param in DDQN
-                  'replay_mini_batch': 16,  # 32 is the value used in DDQN, and seems the most generic one
-                  'nn_copy_cadency': None,  # every how many episodes q_policy gets copied to q_target
+                  'buff_size': 256,  # 5_000 it's the param in DDQN
+                  'replay_mini_batch': 64,  # 32 is the value used in DDQN, and seems the most generic one
+                  'nn_copy_cadency': 10,  # every how many episodes we copy policy_nn to target_nn
                   'nn_architecture': network_architecture,
-                  'soft_update': 0.01,
+                  'soft_update': 0.005,
                   'pretrain': 0,
                   'action_as_input':False,
-                  'cust_exploration':custom_exploration}
+                  'cust_exploration':custom_exploration,
+                  'add_logs':False}
+
+# In order to make different runs reproducible, fix random seeds
+#seed = 5
+#random.seed(seed)
+#np.random.seed(seed)
+#tf.random.set_seed(seed)
+
 
 ddqn_axel = DDQN(sett=agent_settings)
 ddqn_tf = initialize_ddqn_tf()
 
+# Copy params from 
+# https://github.com/abhisheksuran/Reinforcement_Learning/blob/master/DDDQN.ipynb
+
 # According to openai/gym/wiki
 # Considered solved when the average reward is greater than 
-# or equal to 195.0 over 100 consecutive trials.
+# or equal to 475 over 100 consecutive episodes.
 
 #Train ddqn implementation on the Cartpole environment
+#results = cProfile.run("ddqn_axel.learn()")
+#print(f'results={results}')
 rewards, losses, logs, pol_start, pol_end = ddqn_axel.learn()
-
-logs_df = format_logs(logs)
+#logs_df = format_logs(logs)
 
 plot(data=rewards, title='rewards vs 15 period mavg', mavg=True)
 plot(data=losses, title='losses vs 15 period mavg', mavg=True)
+
+# There is a moment, around episode=67 that everything explodes,
+# check what is going on
