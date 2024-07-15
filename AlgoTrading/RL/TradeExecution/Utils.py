@@ -358,7 +358,10 @@ class DDQN():
         """
 
         # First get all the data from the replay buffer
+        #t1 = time.time()
         states, actions, rewards, next_states, dones = self.replay_buffer.get_arrays_from_batch()
+        #t2 = time.time()
+        #print(f'time getting arrays from buffer={round(t2-t1,3)}')
 
         # Create the input for the NN adding the action to the state
         x = states
@@ -366,6 +369,7 @@ class DDQN():
             x = self._compute_input(states, actions)
         y = self._compute_targets(
             states, actions, rewards, next_states, dones)
+        #print(f'time computing x-y ={round(time.time()-t2,3)}')
 
         return x, y
 
@@ -378,15 +382,14 @@ class DDQN():
             print('we do not have enough data to train')
             return 0
         
-        t0 = time.time()
+        #t0 = time.time()
         x, y = self._compute_regressors_targets()
-        t1 = time.time()
+        #t1 = time.time()
         #print(f'time computing regressors={round(t1-t0,5)}')
         # Checked and there is no difference between this and self.policy_nn.train_on_batch
         # over a single epoch. Seems fit is way faster though.
         history = self.policy_nn.train_on_batch(x, y)
-        #history = self.policy_nn.fit(x,y,verbose=0)
-        t2 = time.time()
+        #t2 = time.time()
         #print(f'time training on batch ={round(t2-t1,5)}')
         return history.item()
         #return history.history['loss'][0]
@@ -431,6 +434,7 @@ class DDQN():
                     history.append([s, action, reward, s_prime, self.env.data_idx])
                     # Update target (if needed)
                     self._soft_update_policy(pre_ep)
+
 
                 # Change the pre-training mode
                 if mode == 'start':
@@ -484,7 +488,9 @@ class DDQN():
                 if self.add_log:
                     history.append([s, action, reward, s_prime])
                 s = s_prime
+                #t2 = time.time()
                 self._soft_update_policy(ep)
+                #print(f'time updating target={round(time.time()-t2,3)}')
                 step +=1
             
             # Update the max_reward acquired on this episode.
@@ -536,8 +542,7 @@ class DDQN():
         # for a given input state s over all actions that can be taken
         # Note that we are computing the q values from our target_nn, not our policy_nn
         if self.action_as_in:
-            # TO_DO IMPORTANT!!! Fix 
-
+            # TO_DO IMPORTANT!!! FIX
             x_next_states = self._compute_input(next_states)
             q_val = self.target_nn.predict(x_next_states[:, 1:], verbose=0)
             max_q_val = np.array([q_val[x_next_states[:, 0] == i].max()
@@ -552,13 +557,14 @@ class DDQN():
         # number of states. Therefore, our targets should have the number of outputs (columns)
         # equal to the number of actions!!
 
-        target = self.policy_nn.predict(states,verbose=0)
-        target_next_states = self.policy_nn.predict(next_states,verbose=0)
-        next_state_val = self.target_nn.predict(next_states,verbose=0)
+        target = self.policy_nn(states)
+        target_next_states = self.policy_nn(next_states)
+        next_state_val = np.array(self.target_nn(next_states))
+        
         max_action = np.argmax(target_next_states, axis=1)
-        batch_index = np.arange(self.replay_mini_batch, dtype=np.int32)
+        batch_index = np.arange(self.replay_mini_batch)
         y = np.copy(target)
-        y[batch_index, actions] = rewards + self.gamma * next_state_val[batch_index, max_action]*(1-dones.astype(int))
+        y[batch_index, actions] = rewards + self.gamma * next_state_val[batch_index,max_action]*(1-dones.astype(int))
 
         return y
 
@@ -671,8 +677,8 @@ agent_settings = {'gamma': 0.99,
                   'greedy_uniform': True,
                   'greedy_max_step': 500,
                   'environment': env,
-                  'episodes': 250,  # 10_000 it's the param in DDQN
-                  'buff_size': 5_000,  # 5_000 it's the param in DDQN
+                  'episodes': 50,  # 10_000 it's the param in DDQN
+                  'buff_size': 1_000,  # 5_000 it's the param in DDQN
                   'replay_mini_batch': 64,  # 32 is the value used in DDQN, and seems the most generic one
                   'nn_copy_cadency': 10,  # every how many episodes we copy policy_nn to target_nn
                   'nn_architecture': network_architecture,
@@ -700,10 +706,10 @@ ddqn_tf = initialize_ddqn_tf()
 # or equal to 475 over 100 consecutive episodes.
 
 #Train ddqn implementation on the Cartpole environment
-#results = cProfile.run("ddqn_axel.learn()")
-#print(f'results={results}')
+t1 = time.time()
 rewards, losses, logs, pol_start, pol_end = ddqn_axel.learn()
-#logs_df = format_logs(logs)
+t2 = time.time()
+print(f'Time learning ddqn agent with numpy arrays={round(t2-t1,3)}')
 
 plot(data=rewards, title='rewards vs 15 period mavg', mavg=False)
 plot(data=losses, title='losses vs 15 period mavg', mavg=False)
