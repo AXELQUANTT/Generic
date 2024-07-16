@@ -27,15 +27,34 @@ def create_dense_layer(neurons:int,
     return tf.keras.layers.Dense(units=neurons, activation=activation, 
                   kernel_regularizer=l2_reg)
 
+#class Model(tf.keras.Model):
+#    """
+#    Create a multi-layered NN using Keras from Tensorflow
+#    """
+#    def __init__(self, hidden_units, output_size, optimizer, loss):
+#        super(Model, self).__init__() # Used to run the init method of the parent class
+#        self.hidden_layers = []
+#        for hidden_unit in hidden_units:
+#            self.hidden_layers.append(tf.keras.layers.Dense(hidden_unit, activation = relu))
+#            
+#        self.output_layer = tf.keras.layers.Dense(output_size, activation = linear)
+#        self.compile(loss=loss,optimizer=optimizer)
+
+    #@tf.function(input_signature=(tf.TensorSpec(shape=(4,), dtype=tf.float32),))
+#    @tf.function(reduce_retracing=True)
+#    def call(self, input_data):
+#        x = self.hidden_layers[0](input_data)
+#        for layer in self.hidden_layers[1:]:
+#            x = layer(x)
+#        output = self.output_layer(x)
+#        return output
+
 def create_nn(input_size: int,
               model_params: dict,
               output_size: int) -> tf_keras.Model:
 
     # Build the architecture
-    #tf.random.set_seed(1234)
     model = tf.keras.Sequential()
-    #if name!='':
-    #    model.name = name
     if input_size!=0:
         model.add(tf.keras.Input(shape=(input_size,)))
     for neurons in model_params['neurons']:
@@ -292,18 +311,28 @@ class DDQN():
         # used to compute y_values, networks
         self.action_as_in = sett['action_as_input']
 
-        self.policy_nn: tf_keras.Model = create_nn(input_size=self.env.observation_space.shape[0]+1 if self.action_as_in else self.env.observation_space.shape[0],
-                                                model_params=sett['nn_architecture'],
-                                                output_size=sett['nn_architecture']['output_size'])
         
-        self.target_nn: tf_keras.Model = create_nn(input_size=self.env.observation_space.shape[0]+1 if self.action_as_in else self.env.observation_space.shape[0],
-                                                model_params=sett['nn_architecture'],
-                                                output_size=sett['nn_architecture']['output_size'])
+        #self.policy_nn = Model(hidden_units=sett['nn_architecture']['neurons'],
+        #                       output_size=sett['nn_architecture']['output_size'],
+        #                       optimizer=sett['nn_architecture']['optimizer'],
+        #                       loss=sett['nn_architecture']['loss_function'])
+        self.policy_nn = create_nn(input_size=self.env.observation_space.shape[0]+1 if self.action_as_in else self.env.observation_space.shape[0],
+                                    model_params=sett['nn_architecture'],
+                                    output_size=sett['nn_architecture']['output_size'])
         
-        self.policy_nn.compile(loss=sett['nn_architecture']['loss_function'],
-                    optimizer=sett['nn_architecture']['optimizer'])
-        self.target_nn.compile(loss=sett['nn_architecture']['loss_function'],
-                    optimizer=sett['nn_architecture']['optimizer'])
+        #self.target_nn = Model(hidden_units=sett['nn_architecture']['neurons'],
+        #                        output_size=sett['nn_architecture']['output_size'],
+        #                        optimizer=sett['nn_architecture']['optimizer'],
+        #                        loss=sett['nn_architecture']['loss_function'])
+        #self.policy_nn.compile(loss=sett['nn_architecture']['loss_function'],
+        #            optimizer=sett['nn_architecture']['optimizer'])
+        #self.target_nn.compile(loss=sett['nn_architecture']['loss_function'],
+        #            optimizer=sett['nn_architecture']['optimizer'])
+        self.target_nn = create_nn(input_size=self.env.observation_space.shape[0]+1 if self.action_as_in else self.env.observation_space.shape[0],
+                                    model_params=sett['nn_architecture'],
+                                    output_size=sett['nn_architecture']['output_size'])
+        
+        
         
         self.target_nn_initialized = True
         self.already_copied = False
@@ -366,7 +395,7 @@ class DDQN():
             states, actions, rewards, next_states, dones)
 
         return x, y
-
+    
     def _agent_update(self) -> float:
         """
         Main function devoted to update params of the policy network
@@ -375,8 +404,9 @@ class DDQN():
             return 0
         
         x, y = self._compute_regressors_targets()
-        history = self.policy_nn.train_on_batch(x, y)
-        return history.item()
+        history = self.policy_nn.fit(x=x, y=y, verbose=0, epochs=1)
+        return history.history['loss'][0]
+        #return history.item()
 
     def _pretrain(self) -> None:
         """
@@ -466,7 +496,13 @@ class DDQN():
             tot_ep_rewards.append(ep_reward)
             tot_ep_losses.append(loss)
             print(f'episode {ep}/{self.episodes-1}, greedy_param={round(greedy_param,3)}'\
-                  f' reward={ep_reward}, avg_reward={round(sum(tot_ep_rewards)/len(tot_ep_rewards),3)}')
+                  f' reward={ep_reward}, avg_rew={round(np.average(tot_ep_rewards),3)}, '
+                  f'avg_rew(100)={round(np.average(tot_ep_rewards[-100:]),3)}')
+            
+            # Make the agent stop if it has solved the environment
+            if len(tot_ep_rewards)>=100 and np.average(tot_ep_rewards[-100:]) > 195:
+                print(f'Success, agent has solved the environment')
+                break
 
         return tot_ep_rewards, tot_ep_losses, history, policy_start, policy_end
 
@@ -518,10 +554,13 @@ class DDQN():
             y = rewards[:, 0] + self.gamma * \
             (states[:, 1] > self.env.dt).astype(int)*max_q_val[:, 0]
             return y
+        
+        states_ts = tf.convert_to_tensor(states)
+        next_states_ts = tf.convert_to_tensor(next_states)
 
-        target = self.policy_nn(tf.convert_to_tensor(states))
-        target_next_states = self.policy_nn(tf.convert_to_tensor(next_states))
-        next_state_val = np.array(self.target_nn(tf.convert_to_tensor(next_states)))
+        target = self.policy_nn(states_ts)
+        target_next_states = self.policy_nn(next_states_ts)
+        next_state_val = np.array(self.target_nn(next_states_ts))
         
         max_action = np.argmax(target_next_states, axis=1)
         batch_index = np.arange(self.replay_mini_batch)
@@ -594,7 +633,10 @@ def initialize_ddqn_tf() -> DdqnAgent:
         q_network=q_net_ax,
         optimizer=network_architecture['optimizer'],
         td_errors_loss_fn=network_architecture['loss_function'],
-        target_update_period=agent_settings['nn_copy_cadency'])
+        target_update_period=agent_settings['nn_copy_cadency'],
+        gamma=agent_settings['gamma'])
+    
+    ddqn_tf.initialize()
     
     return ddqn_tf
 
@@ -622,25 +664,26 @@ def plot(data: list, title: str, mavg: bool) -> None:
     plt.title(title)
     plt.show()
 
+
 # Create the gym environments and the agents
 env = gym.make("CartPole-v0")
 train_env = tf_py_environment.TFPyEnvironment(suite_gym.load('CartPole-v0'))
 
 # SETTINGS
-network_architecture = {'neurons': [128]*2,  # same params as DDQN paper
+network_architecture = {'neurons': [256]*2,  # same params as DDQN paper
                         'output_size': env.action_space.n,
                         'loss_function': tf.keras.losses.MeanSquaredError(),
                         # modified according to DDQN paper
-                        'optimizer': tf.keras.optimizers.Adam(learning_rate=0.001),
+                        'optimizer': tf.keras.optimizers.Adam(learning_rate=0.01),
                         }
 
 agent_settings = {'gamma': 0.99,
                   'greedy': [1.0, 0.01],
                   'greedy_uniform': True,
-                  'greedy_max_step': 500,
+                  'greedy_max_step': 1_500,
                   'environment': env,
                   'episodes': 1_000,  # 10_000 it's the param in DDQN
-                  'buff_size': 500,  # 5_000 it's the param in DDQN
+                  'buff_size': 1_000,  # 5_000 it's the param in DDQN
                   'replay_mini_batch': 64,  # 32 is the value used in DDQN, and seems the most generic one
                   'nn_copy_cadency': 10,  # every how many episodes we copy policy_nn to target_nn
                   'nn_architecture': network_architecture,
@@ -651,20 +694,22 @@ agent_settings = {'gamma': 0.99,
                   'add_logs':False}
 
 # In order to make different runs reproducible, fix random seeds
-seed = 5
-random.seed(seed)
-np.random.seed(seed)
-tf.random.set_seed(seed)
+#seed = 5
+#random.seed(seed)
+#np.random.seed(seed)
+#tf.random.set_seed(seed)
 
 ddqn_axel = DDQN(sett=agent_settings)
-ddqn_tf = initialize_ddqn_tf()
+# Check how fast does ddqn_tf agent learn
+#ddqn_tf = initialize_ddqn_tf()
+#rewards, losses, = learn_ddqn_tf(ddqn_tf)
 
 # Copy params from 
 # https://github.com/abhisheksuran/Reinforcement_Learning/blob/master/DDDQN.ipynb
 
 # According to openai/gym/wiki
-# Considered solved when the average reward is greater than 
-# or equal to 475 over 100 consecutive episodes.
+# Cartpole-v0 => average_reward >= 195 over 100 consecutive episodes
+# Cartpole-v1 => average_reward >= 475 over 100 consecutive episodes.
 
 #Train ddqn implementation on the Cartpole environment
 t1 = time.time()
