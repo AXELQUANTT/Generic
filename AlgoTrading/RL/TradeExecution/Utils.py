@@ -307,6 +307,7 @@ class DDQN():
         #                action a to state s)
         self.replay_buffer = ExpirienceReplay(
             maxlen=self.buff_size, mini_batch=self.replay_mini_batch)
+        self.batch_index = np.arange(self.replay_mini_batch)
         # Create policy, used to extract actions, and target,
         # used to compute y_values, networks
         self.action_as_in = sett['action_as_input']
@@ -390,10 +391,13 @@ class DDQN():
         # Create the input for the NN adding the action to the state
         x = states
         if self.action_as_in:
-            x = self._compute_input(states, actions)
+            x = tf.convert_to_tensor(self._compute_input(states)[:,1:])
         y = self._compute_targets(
             states, actions, rewards, next_states, dones)
 
+        # Perform dimensionality check
+        if x.shape[1]!=self.target_nn.input_shape[1] or y.ndim!=self.target_nn.output_shape[1] or x.shape[0]!=y.shape[0]:
+            raise ValueError(f'x-y dimensions are wrong, check!')
         return x, y
     
     def _agent_update(self) -> float:
@@ -406,7 +410,6 @@ class DDQN():
         x, y = self._compute_regressors_targets()
         history = self.policy_nn.fit(x=x, y=y, verbose=0, epochs=1)
         return history.history['loss'][0]
-        #return history.item()
 
     def _pretrain(self) -> None:
         """
@@ -506,22 +509,31 @@ class DDQN():
 
         return tot_ep_rewards, tot_ep_losses, history, policy_start, policy_end
 
-    def _compute_input(self, states: np.array, actions: np.array = np.array([])) -> np.array:
+    def _compute_input(self, states: np.array, actions: np.array = np.array([]), action_flag:np.array=[]) -> np.array:
         """
         This function creates the input needed for the nn, both for the
         target and for the policy. If no actions are provided, it generates
         all the possible actions (0, qt) for the current state.
+
+        states => MUST BE a ndim=2 np.array
+        actions => MUST BE a ndim=1 np.array
         """
         if actions.size == 0:
             x = np.array([])
             for idx, state in enumerate(states):
-                qt = state[0]
+                if self.env.unwrapped.spec.id=='CartPole-v0':
+                    max_action_len = self.env.action_space.n-1
+                else:
+                    max_action_len = state[0]
                 mod_state = np.append(
                     np.array([idx]), states[idx:idx+1, :]).reshape(1, state.shape[0]+1)
-                rep_states = np.repeat(mod_state, qt+1, axis=0)
+                rep_states = np.repeat(mod_state, max_action_len+1, axis=0)
                 poss_actions = np.array(
-                    range(qt+1), dtype=int).reshape(qt+1, 1)
+                    range(max_action_len+1), dtype=int).reshape(max_action_len+1, 1)
                 repeated_state = np.append(rep_states, poss_actions, axis=1)
+                # Add a flag to know which was the action selected
+                if len(action_flag) != 0:
+                    repeated_state = np.c_[repeated_state,repeated_state[:,-1]==action_flag[idx]]
                 if x.size == 0:
                     x = repeated_state
                 else:
@@ -535,37 +547,66 @@ class DDQN():
             raise ValueError(
                 f'Dimensions of states={n} and actions={a} do not match, check!')
 
-        return np.append(states, actions, axis=1)
+        return np.append(states, actions.reshape(len(actions),1), axis=1)
+    
+    def _construct_np_arr(self, x, q_vals):
+        """
+        x: tensor containing the index of the state on the first column and the action
+            taken on the last column
+        q_vals : tensor result from computing q_vals on x
+
+        returns a numpy array appending information from both tensors
+        """
+        return np.append(x.numpy()[:,[0,-1]], q_vals.numpy(),axis=1)
 
     def _compute_targets(self, states, actions ,rewards, next_states, dones):
         """
         Auxiliary function devoted to compute the y-values for the networks
         """
-        # max_q_s_prime_a_prime will be the max all predictions of policy network
-        # over states s'. Note that in general, q_values are just the output values
-        # for a given input state s over all actions that can be taken
-        # Note that we are computing the q values from our target_nn, not our policy_nn
-        if self.action_as_in:
-            # TO_DO IMPORTANT!!! FIX
-            x_next_states = self._compute_input(next_states)
-            q_val = self.target_nn.predict(x_next_states[:, 1:], verbose=0)
-            max_q_val = np.array([q_val[x_next_states[:, 0] == i].max()
-                              for i, _ in groupby(x_next_states[:, 0])]).reshape(len(states), 1)
-            y = rewards[:, 0] + self.gamma * \
-            (states[:, 1] > self.env.dt).astype(int)*max_q_val[:, 0]
-            return y
         
+        if self.action_as_in:
+            # Exercise => rewrite this so that action is taken as input
+            # Consider that Y needs to be a self.batch x 1d array
+            x_states = tf.convert_to_tensor(self._compute_input(states,action_flag=actions))
+            x_next_states = tf.convert_to_tensor(self._compute_input(next_states))
+
+            # Perfom some check
+            if sum(x_states.numpy()[:,-1]==1)!=self.replay_mini_batch:
+                raise ValueError(f'Check x_states computation, number of selections actions does not match!!')
+
+            # For each target value, get its state indx and the action that led to that
+            # q_val (it eases the posterior data wrangling on these datasets)
+            target = self._construct_np_arr(x_states, self.policy_nn(x_states[:,1:-1]))
+            target_next_states = self._construct_np_arr(x_next_states, self.policy_nn(x_next_states[:,1:]))
+
+            # One corner case here is what happens if the policy_nn network produces the exact same q_value
+            # for two diferent actions. In those cases it's indiferent which action to take, so we take
+            # the first one (arbitrary, but by definition should not have any impact). Also,
+            # we expect this to vanish as soon as the networks starts learning.
+            max_actions = np.array([target_next_states[((target_next_states[:,0]==i)&(target_next_states[:,2]==target_next_states[target_next_states[:,0]==i,2].max())),1][0]\
+                          for i, _ in groupby(target_next_states[:, 0])])
+            
+            # Get q_value from target_nn over the max action
+            x_next_states_with_max_action = tf.convert_to_tensor(self._compute_input(next_states,max_actions))
+            max_q_prime = self.target_nn(x_next_states_with_max_action)
+            
+            # The input to learn is 128 array, so y must be also a 128 array
+            y = np.copy(target)
+            y[x_states[:,-1]==1, 2] = rewards + self.gamma*max_q_prime[:,0]*(1-dones.astype(int))
+            return tf.convert_to_tensor(y[:,2])
+
         states_ts = tf.convert_to_tensor(states)
         next_states_ts = tf.convert_to_tensor(next_states)
 
         target = self.policy_nn(states_ts)
+        # This will output a [self.batch x 2] array
         target_next_states = self.policy_nn(next_states_ts)
         next_state_val = np.array(self.target_nn(next_states_ts))
+        max_actions = np.argmax(target_next_states, axis=1)
         
-        max_action = np.argmax(target_next_states, axis=1)
-        batch_index = np.arange(self.replay_mini_batch)
+        # Create the targets, modifying the value for the actions taken acc to Bellman equation
         y = np.copy(target)
-        y[batch_index, actions] = rewards + self.gamma * next_state_val[batch_index,max_action]*(1-dones.astype(int))
+        y[self.batch_index, actions] = rewards + self.gamma * next_state_val[self.batch_index,max_actions]*(1-dones.astype(int))
 
         return tf.convert_to_tensor(y)
 
@@ -605,9 +646,9 @@ class DDQN():
                 # Compute the q-value from all the possible actions [0,qt] and retrieve the action
                 # that delivers the best overall q-value
                 if self.action_as_in:
-                    x = self._compute_input(states=state)
+                    x = self._compute_input(states=state.reshape(1,len(state)))
                     # Remember that the first element of x is just a mute index
-                    predictions = self.policy_nn(x[:, 1:])
+                    predictions = self.policy_nn(tf.convert_to_tensor(x[:, 1:]))
                 else:
                     predictions = self.policy_nn(tf.convert_to_tensor(state.reshape(1,len(state))))
                 best_action = np.argmax(predictions)
@@ -670,11 +711,11 @@ env = gym.make("CartPole-v0")
 train_env = tf_py_environment.TFPyEnvironment(suite_gym.load('CartPole-v0'))
 
 # SETTINGS
-network_architecture = {'neurons': [256]*2,  # same params as DDQN paper
-                        'output_size': env.action_space.n,
+network_architecture = {'neurons': [128]*2,  # same params as DDQN paper
+                        'output_size': 1,#env.action_space.n,
                         'loss_function': tf.keras.losses.MeanSquaredError(),
                         # modified according to DDQN paper
-                        'optimizer': tf.keras.optimizers.Adam(learning_rate=0.01),
+                        'optimizer': tf.keras.optimizers.Adam(learning_rate=0.001),
                         }
 
 agent_settings = {'gamma': 0.99,
@@ -682,22 +723,22 @@ agent_settings = {'gamma': 0.99,
                   'greedy_uniform': True,
                   'greedy_max_step': 1_500,
                   'environment': env,
-                  'episodes': 1_000,  # 10_000 it's the param in DDQN
+                  'episodes': 500,  # 10_000 it's the param in DDQN
                   'buff_size': 1_000,  # 5_000 it's the param in DDQN
                   'replay_mini_batch': 64,  # 32 is the value used in DDQN, and seems the most generic one
                   'nn_copy_cadency': 10,  # every how many episodes we copy policy_nn to target_nn
                   'nn_architecture': network_architecture,
                   'soft_update': 0.005,
                   'pretrain': 0,
-                  'action_as_input':False,
+                  'action_as_input':True,#False (make sure to change network_architecture['output_size'])
                   'cust_exploration':custom_exploration,
                   'add_logs':False}
 
 # In order to make different runs reproducible, fix random seeds
-#seed = 5
-#random.seed(seed)
-#np.random.seed(seed)
-#tf.random.set_seed(seed)
+seed = 5
+random.seed(seed)
+np.random.seed(seed)
+tf.random.set_seed(seed)
 
 ddqn_axel = DDQN(sett=agent_settings)
 # Check how fast does ddqn_tf agent learn
