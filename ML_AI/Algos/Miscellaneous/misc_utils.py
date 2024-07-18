@@ -1,14 +1,14 @@
 """
-Package with some utils that may be quite handy
-for general ML_AI projects
+Package with some generic utils used across multiple
+ML projects
 """
 
-import keras
-from keras import Sequential
-from keras.activations import linear,relu
-from keras.layers import Dense
-#from keras.optimizers import Adam
 import tensorflow as tf
+import tf_keras
+import tf_keras.activations
+from tf_keras.activations import relu,linear
+import tensorflow as tf
+from typing import Any
 import numpy as np
 
 def compute_grad_desc(tf_variables:tf.Variable,
@@ -40,8 +40,8 @@ def compute_grad_desc(tf_variables:tf.Variable,
 def optimize_params(tf_variables:tf.Variable,
                     x:np.array,
                     y:np.array,
-                    cost_tf_vars,
-                    optimizer:keras.Optimizer,
+                    cost_tf_vars:Any,
+                    optimizer:tf_keras.optimizers.Optimizer,
                     n_iters:int=100):
     
     for _ in range(n_iters):
@@ -53,23 +53,28 @@ def optimize_params(tf_variables:tf.Variable,
         optimizer.apply_gradients(zip(derivates,[tf_variables]))
     
     return tf_variables
+
+
+def create_dense_layer(neurons:int,
+                 activation:tf_keras.activations=relu,
+                 l2_reg=None) -> tf_keras.layers.Dense:
     
-def create_nn(x:np.array,
-              model_params:dict,
-              output_size:int) -> keras.Model:
+    return tf.keras.layers.Dense(units=neurons, activation=activation, 
+                  kernel_regularizer=l2_reg)
 
-    # Build the architecture
-    tf.random.set_seed(1234)
-    model = Sequential()
-    model.add(keras.Input(shape=(x.shape[1],)))
+def create_nn(input_size: int,
+              model_params: dict,
+              output_size: int) -> tf_keras.Model:
+
+    model = tf.keras.Sequential()
+    if input_size!=0:
+        model.add(tf.keras.Input(shape=(input_size,)))
     for neurons in model_params['neurons']:
-        model.add(Dense(units=neurons, activation=relu, kernel_regularizer=tf.keras.regularizers.l2(model_params['lambda'])))
+        model.add(create_dense_layer(neurons=neurons,
+                                     activation=relu))
+    model.add(create_dense_layer(neurons=output_size, activation=linear))
 
-    # Finally add the output layer
-    model.add(Dense(units=output_size, activation=linear))
-
-    # Configure the network => specify loss functiona and optimizer
-    model.compile(loss=model_params['loss_function'], optimizer=model_params['optimizer'])
+    model.compile(loss=model_params['loss_function'],
+                    optimizer=model_params['optimizer'])
 
     return model
-
