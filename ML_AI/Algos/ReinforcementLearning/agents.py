@@ -44,10 +44,9 @@ class ExpirienceReplay:
 
     def buffer_size(self):
         return len(self._buffer)
+    
 
-########################## AGENTS ##########################
-
-class DDQN():
+class DDQN:
     """
     This file devoted to implement a DQN (deep Q neuronal network)
     algorithm to be used as agent in any RL environment
@@ -315,14 +314,13 @@ class DDQN():
         
         best_action = np.argmax(predictions)
         return best_action
-            
+    
 
 class DDQN_tradexecution(DDQN):
         def __init__(self,sett):
             super(DDQN).__init__(sett)
             self.unif = sett['greedy_uniform']
             self.pretrain = sett['pretrain']
-            pass
         
         def _pretrain(self) -> None:
             """
@@ -435,3 +433,100 @@ class DDQN_tradexecution(DDQN):
             pol_start,pol_end = self._pretrain()
             tot_ep_rewards, tot_ep_losses, history = super(DDQN).train()
             return tot_ep_rewards, tot_ep_losses, history, pol_start, pol_end
+        
+
+class Agent_Performance():
+    def __init__(self, rewards:list[np.array], losses:list[np.array], solved_func, solved_rew:float) -> None:
+        """
+        rewards : list of variable numpy arrays, where each array contains the rewards for a given trial.
+        losses : list of variable size numpy arrays, where each array contains the losses for a given trial.
+        solved_func : function that takes a list of rewards as input and returns the statistic need to
+        know if the env is solved.
+        solved_rew : if solved_func==solved_rew, then env is solved
+        """
+        self.solver = solved_func
+        self.solved_rew = solved_rew
+        self.rew = rewards
+        self.loss = losses
+        self.rew_return = [np.diff(trial) for trial in self.rew]
+
+    def _avg_end_rew(self) -> float:
+        """
+        Computes average end reward for each trial
+        """
+        return np.average([trial[-1] for trial in self.rew])
+    
+    def _best_worst_end_rew(self) -> float:
+        """
+        Ratio between best and worst try
+        """
+        best_end_rew = max([trial[-1] for trial in self.rew])
+        worst_end_rew = min([trial[-1] for trial in self.rew])
+
+        return best_end_rew/worst_end_rew - 1
+    
+    def _avg_across_trials(self,qty) -> float:
+        """
+        Given a qty, it computes the average of that qty across trials
+        """
+        total_points = sum([trial.size for trial in qty])
+        total_rewards = sum([sum(trial) for trial in qty])
+
+        return total_rewards/total_points
+
+    def _avg_epi_rew(self) -> float:
+        """
+        Computes avg reward per episode
+        """
+        return self._avg_across_trials(self.rew)
+    
+    def _avg_epi_rew_increase(self) -> float:
+        """
+        Computes avg reward increase per episode
+        """ 
+        return self._avg_across_trials(self.rew_return)
+    
+    def _std_epi_rew_increase(self) -> float:
+        """
+        Computes the standard deviation of the reward increase per episode
+        """
+        return np.mean([np.var(trial) for trial in self.rew_return])**0.5
+    
+    def _n_solved(self) -> int:
+        """
+        Computes number of trials that were solved
+        """
+        return sum([self.solver(trial)==self.solved_rew for trial in self.rew])
+    
+    def _max_drawdown(self) -> float:
+        """
+        Computes average drawdown in the learning process, as the difference between
+        the max value and the subsequent min value. This aims to capture the agent
+        de-learning the right policy.
+        """
+        min_max = []
+        for trial in self.rew:
+            trial_min = min(trial[np.argmax(trial):])
+            min_max.append(max(trial)-trial_min)
+
+        return np.average(min_max)
+    
+    def _avg_ep_to_solve(self) -> float:
+        ep_solv = []
+        for trial in self.rew:
+            if self.solver(trial)==self.solved_rew:
+                # It assumes that env stops when it is solved
+                ep_solv.append(len(trial))
+        
+        return None if ep_solv==[] else np.average(ep_solv)
+
+    def compute_statistics(self) -> dict:
+        return {'avg_end_rew':self._avg_end_rew(), # info about overall learning capacity
+                'best_worst_ratio_end_rew':self._best_worst_end_rew(),# robustness across best-worst try
+                'avg_epi_rew':self._avg_epi_rew(), # info about the episode learning capacity
+                'avg_epi_rew_increase':self._avg_epi_rew_increase(), # info about the learning rate
+                'std_epi_rew_increase':self._std_epi_rew_increase(), # info about the robustness on the learning
+                'n_solved':self._n_solved(),# info about overall success in the learning
+                'avg_ep_to_solve':self._avg_ep_to_solve(),# info about how fast agent solves it
+                'max_drawdown':self._max_drawdown() # info about how likely is that agent to de-learn the optimal policy 
+                } 

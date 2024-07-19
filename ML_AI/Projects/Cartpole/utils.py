@@ -1,4 +1,5 @@
 import collections
+import numpy as np
 import pandas as pd
 import tensorflow as tf
 from typing import Any, Optional
@@ -43,3 +44,7 @@ def save_data(rewards,losses,exec_time,filename,out_path) -> None:
     results_df.columns = ['rewards','losses','exec_time']
     out_filename = f'{out_path}/{filename}.csv'
     results_df.to_csv(out_filename, index=False)
+
+
+def solve_metric(rew) -> bool:
+    return np.average(rew[-100:])
