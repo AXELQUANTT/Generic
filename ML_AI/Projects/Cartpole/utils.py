@@ -1,4 +1,5 @@
 import collections
+import glob
 import numpy as np
 import pandas as pd
 import tensorflow as tf
@@ -45,6 +46,37 @@ def save_data(rewards,losses,exec_time,filename,out_path) -> None:
     out_filename = f'{out_path}/{filename}.csv'
     results_df.to_csv(out_filename, index=False)
 
-
-def solve_metric(rew) -> bool:
+def solve_metric(rew) -> float:
     return np.average(rew[-100:])
+
+def load_agent_results(out_path:str) -> dict[str,pd.DataFrame]:
+    """
+    Gets rewards and losses data from the output files and generates
+    a list of DataFrames with all the information
+    """
+    
+    files = glob.glob(f'{out_path}/*.csv')
+    param_sett_ids = set(x.split('/')[-1].split('_iter')[0] for x in files)
+    results = {}
+    for param in param_sett_ids:
+        # Select only the trials of this parameter settings
+        files_for_this_param = [x for x in files if x.split('/')[-1].split('_iter')[0]==param]
+        trials = []
+        for trial_param in files_for_this_param:
+            df = pd.read_csv(trial_param)
+            df['iter'] = int(trial_param.split('_')[-1].split('.')[0])
+            df.reset_index(inplace=True)
+            df.rename(columns={'index':'episodes'},inplace=True)
+            trials.append(df)
+        df = pd.concat(trials)
+        df.reset_index(drop=True,inplace=True)
+        results[param] = df
+    
+    return results
+
+def creage_avg(df, col, window) -> pd.DataFrame:
+    """
+    Computes moving averages of window size over the selected column col  
+    """
+    df[f'{col}({window})'] =  df[col].rolling(window).mean()
+    return df
