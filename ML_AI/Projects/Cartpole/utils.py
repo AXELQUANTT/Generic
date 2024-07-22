@@ -1,7 +1,9 @@
 import collections
 import glob
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import seaborn as sns
 import tensorflow as tf
 from typing import Any, Optional
 
@@ -80,3 +82,10 @@ def creage_avg(df, col, window) -> pd.DataFrame:
     """
     df[f'{col}({window})'] =  df[col].rolling(window).mean()
     return df
+
+def sns_lineplot(df:pd.DataFrame, x:str, y:str, gpby:str, title:str):
+    sns.set_theme()
+    fig, ax = plt.subplots(figsize=(20,5))
+    sns.lineplot(data=df, x=x, y=y, hue=gpby)
+    plt.title(title)
+    plt.show()
