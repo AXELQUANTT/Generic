@@ -88,7 +88,8 @@ class DDQN:
         old_weights = self.target_nn.get_weights()
         new_weights = self.policy_nn.get_weights()
         if self.target_nn_initialized:
-            print(f'Hard copy policy_weights to target_weights')
+            if self.add_log:
+                print(f'Hard copy policy_weights to target_weights')
             self.target_nn.set_weights(new_weights)
             self.target_nn_initialized = False
             return 
@@ -96,7 +97,8 @@ class DDQN:
         if self.copy_cadency:
             if (ep+1) % self.copy_cadency == 0.0:
                 if not self.already_copied:
-                    print(f'Hard copy policy_weights to target_weights')
+                    if self.add_log:
+                        print(f'Hard copy policy_weights to target_weights')
                     self.target_nn.set_weights(new_weights)
                     self.already_copied=True
                 return
@@ -104,7 +106,8 @@ class DDQN:
             self.already_copied = False
             return
         
-        print('Copying weights using soft_update')
+        if self.add_log:
+            print('Copying weights using soft_update')
         target_weights = list((1-self.soft_update)*old_weights[idx]+\
                             self.soft_update*new_weights[idx] for idx in range(len(new_weights)))
         self.target_nn.set_weights(target_weights)
@@ -170,9 +173,10 @@ class DDQN:
             tot_ep_losses.append(loss)
             avg = np.average(tot_ep_rewards)
             last_hundred_avg =  np.average(tot_ep_rewards[-100:])
-            print(f'episode {ep}/{self.episodes-1}, greedy_param={round(self.greedy,5)}'\
-                  f' reward={ep_reward}, avg_rew={round(avg,3)},'
-                  f' avg_rew(100)={round(last_hundred_avg,3)}')
+            if self.add_log:
+                print(f'episode {ep}/{self.episodes-1}, greedy_param={round(self.greedy,5)}'\
+                    f' reward={ep_reward}, avg_rew={round(avg,3)},'
+                    f' avg_rew(100)={round(last_hundred_avg,3)}')
             
             if len(tot_ep_rewards)>=100 and last_hundred_avg > 195:
                 print(f'Success, agent has solved the environment')
@@ -496,7 +500,7 @@ class Agent_Performance():
         """
         Computes number of trials that were solved
         """
-        return sum([self.solver(trial)==self.solved_rew for trial in self.rew])
+        return sum([self.solver(trial)>=self.solved_rew for trial in self.rew])
     
     def _max_drawdown(self) -> float:
         """
@@ -514,19 +518,19 @@ class Agent_Performance():
     def _avg_ep_to_solve(self) -> float:
         ep_solv = []
         for trial in self.rew:
-            if self.solver(trial)==self.solved_rew:
+            if self.solver(trial)>=self.solved_rew:
                 # It assumes that env stops when it is solved
                 ep_solv.append(len(trial))
         
         return None if ep_solv==[] else np.average(ep_solv)
 
-    def compute_statistics(self) -> dict:
-        return {'avg_end_rew':self._avg_end_rew(), # info about overall learning capacity
-                'best_worst_ratio_end_rew':self._best_worst_end_rew(),# robustness across best-worst try
-                'avg_epi_rew':self._avg_epi_rew(), # info about the episode learning capacity
-                'avg_epi_rew_increase':self._avg_epi_rew_increase(), # info about the learning rate
-                'std_epi_rew_increase':self._std_epi_rew_increase(), # info about the robustness on the learning
+    def compute_statistics(self, prec:int) -> dict:
+        return {'avg_end_rew':round(self._avg_end_rew(),prec), # info about overall learning capacity
+                'best_worst_ratio_end_rew':round(self._best_worst_end_rew(),prec),# robustness across best-worst try
+                'avg_epi_rew':round(self._avg_epi_rew(),prec), # info about the episode learning capacity
+                'avg_epi_rew_increase':round(self._avg_epi_rew_increase(),prec), # info about the learning rate
+                'std_epi_rew_increase':round(self._std_epi_rew_increase(),prec), # info about the robustness on the learning
                 'n_solved':self._n_solved(),# info about overall success in the learning
                 'avg_ep_to_solve':self._avg_ep_to_solve(),# info about how fast agent solves it
-                'max_drawdown':self._max_drawdown() # info about how likely is that agent to de-learn the optimal policy 
-                } 
+                'max_drawdown':round(self._max_drawdown(),prec) # info about how likely is that agent to de-learn the optimal policy 
+                }
