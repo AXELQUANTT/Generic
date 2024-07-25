@@ -300,7 +300,7 @@ class DDQN:
             - In testing we want to perform at the best of our capabilities,
             so we only consider exploitation regime.
         """
-        print("USING GENERIC CHOOSE_ACTION FUNCTION")
+        
         if train and np.random.rand() <= self.greedy:
             # Exploration
             # Get a random trial from a binomial (qt , 1/time_to_expiry)
