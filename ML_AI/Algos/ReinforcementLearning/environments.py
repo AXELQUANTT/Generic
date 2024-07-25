@@ -82,13 +82,13 @@ class TradeExecution(gym.Env):
                                             high=np.array([self.q0, self.T]),
                                             dtype=np.float64)
 
-    def reset(self, id: int = 0) -> tuple[Any, dict[str, Any]]:
+    def reset(self, id: int = -1) -> tuple[Any, dict[str, Any]]:
         self.qt = self.q0
         self.t = self.T
         self.done = False
         # in case the user provides it, the environment gets reset to this specific
         # timestamp
-        if id > 0:
+        if id >= 0:
             if id > self.data.shape[0]-1:
                 raise ValueError(f'Provided index is out of bounds, df.size={self.data.shape[0]},'
                                  f' index={id}')
@@ -99,9 +99,8 @@ class TradeExecution(gym.Env):
 
         return self.extract_state(), info
 
-    # IMPORTANT => all columns that define a state should start with prefix state_
     def extract_state(self) -> np.array:
-        return np.array(object=[self.qt, self.t], ndmin=2, dtype=int)
+        return np.array([self.qt, self.t], dtype=int)
 
     def render(self) -> RenderFrame | list[RenderFrame] | None:
         pass
@@ -162,10 +161,10 @@ class TradeExecution(gym.Env):
 
         elif self.t == 0:
             # If we get to the last step, add big penalty for all the remaining
-            # shares that we have
+            # shares that we have in a dt interval
             reward += self.qt * \
                 self._get_mp_diff(self.data_idx) - \
-                self.alpha*shs_per_interval**2
+                self.alpha*self.qt**2
             self.data_idx += 1
             self.done = True
 
