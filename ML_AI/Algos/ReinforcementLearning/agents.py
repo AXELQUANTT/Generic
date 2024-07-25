@@ -78,6 +78,10 @@ class DDQN:
         self.copy_cadency = sett['nn_copy_cadency']
         self.soft_update = sett['soft_update']
         self.add_log = sett['add_logs']
+        self.solve_metric = sett['solve_metric']
+        self.solve_target = sett['solve_target']
+        self.termination_policy = self.solve_metric != None
+        self.max_action = sett['max_poss_action']# action masking feature
 
     def _soft_update_policy(self, ep:int) -> None:
         """
@@ -106,8 +110,6 @@ class DDQN:
             self.already_copied = False
             return
         
-        if self.add_log:
-            print('Copying weights using soft_update')
         target_weights = list((1-self.soft_update)*old_weights[idx]+\
                             self.soft_update*new_weights[idx] for idx in range(len(new_weights)))
         self.target_nn.set_weights(target_weights)
@@ -143,9 +145,12 @@ class DDQN:
         history = self.policy_nn.fit(x=x, y=y, verbose=0, epochs=1)
         return history.history['loss'][0]
 
-    def learn(self) -> list[float]:
+    def train(self) -> list[float]:
         """
         Main function of the class devoted to train our agent with the data
+        action_chooser is passed as a parameter to allow flexibility over
+        different agents, which may have different ways to chose the action
+        but can benefit from the same code to train. 
         """
         tot_ep_rewards = []
         tot_ep_losses = []
@@ -178,7 +183,7 @@ class DDQN:
                     f' reward={ep_reward}, avg_rew={round(avg,3)},'
                     f' avg_rew(100)={round(last_hundred_avg,3)}')
             
-            if len(tot_ep_rewards)>=100 and last_hundred_avg > 195:
+            if self.termination_policy and self.solve_metric(tot_ep_rewards) >= self.solve_target:
                 print(f'Success, agent has solved the environment')
                 break
 
@@ -196,10 +201,10 @@ class DDQN:
         if actions.size == 0:
             x = np.array([])
             for idx, state in enumerate(states):
-                if self.env.unwrapped.spec.id=='CartPole-v0':
+                if not self.max_action:
                     max_action_len = self.env.action_space.n-1
                 else:
-                    max_action_len = state[0]
+                    max_action_len = self.max_action(state[0])
                 mod_state = np.append(
                     np.array([idx]), states[idx:idx+1, :]).reshape(1, state.shape[0]+1)
                 rep_states = np.repeat(mod_state, max_action_len+1, axis=0)
@@ -295,7 +300,7 @@ class DDQN:
             - In testing we want to perform at the best of our capabilities,
             so we only consider exploitation regime.
         """
-
+        print("USING GENERIC CHOOSE_ACTION FUNCTION")
         if train and np.random.rand() <= self.greedy:
             # Exploration
             # Get a random trial from a binomial (qt , 1/time_to_expiry)
@@ -322,9 +327,61 @@ class DDQN:
 
 class DDQN_tradexecution(DDQN):
         def __init__(self,sett):
-            super(DDQN).__init__(sett)
+            super(DDQN_tradexecution, self).__init__(sett)
             self.unif = sett['greedy_uniform']
             self.pretrain = sett['pretrain']
+
+        def choose_action(self, state: np.array, train: bool = True, pretrain_mod: str = '') -> float:
+            """
+            Given an input state s, the agent will get the action it thinks
+            is best suited for it. We have to differentiate between
+            training and testing.
+
+                -  In training we want to leave room for exploration => choose the suboptimal
+                action for the seek of variability to train our agent. How much
+                we allow the algo to explore depends on self.greedy parameter. Note that
+                the degree to which we allow exploration decreases with the trained time.
+
+                - In testing we want to perform at the best of our capabilities,
+                so we only consider exploitation regime.
+            """
+            
+            match pretrain_mod:
+                case '':
+                    if train and np.random.rand() <= self.greedy:
+                        # Exploration
+                        # Get a random trial from a binomial (qt , 1/time_to_expiry)
+                        # Why are we enforcing on the exploration phase a TWAP approach? Should
+                        # not the algorithm figure out that selling a lot of shares on an early
+                        # point is not the best. Seems to me this is a way to reduce the exploration
+                        # phase substantially => try with letting the algo pick any qt available
+                        if self.unif:
+                            action = np.random.randint(low=self.env.action_space.start,high=self.env.action_space.n)
+                            return action
+                        
+                        qt, t = state
+                        return binom(qt, self.env.dt/t).rvs()
+                                
+
+                    # Exploitation
+                    # Compute the q-value from all the possible actions [0,qt] and retrieve the action
+                    # that delivers the best overall q-value
+                    if self.action_as_in:
+                        x = self._compute_input(states=state.reshape(1,len(state)))
+                        # Remember that the first element of x is just a mute index
+                        predictions = self.policy_nn(tf.convert_to_tensor(x[:, 1:]))
+                    else:
+                        predictions = self.policy_nn(tf.convert_to_tensor(state.reshape(1,len(state))))
+                    best_action = np.argmax(predictions)
+                    return best_action
+                case 'start':
+                    if t == self.env.T:
+                        return self.env.q0
+                    return 0
+                case 'end':
+                    if t == self.env.dt:
+                        return self.env.q0
+                    return 0
         
         def _pretrain(self) -> None:
             """
@@ -381,63 +438,45 @@ class DDQN_tradexecution(DDQN):
             
             return None,None
         
-        def choose_action(self, state: np.array, train: bool = True, pretrain_mod: str = '') -> float:
-            """
-            Given an input state s, the agent will get the action it thinks
-            is best suited for it. We have to differentiate between
-            training and testing.
-
-                -  In training we want to leave room for exploration => choose the suboptimal
-                action for the seek of variability to train our agent. How much
-                we allow the algo to explore depends on self.greedy parameter. Note that
-                the degree to which we allow exploration decreases with the trained time.
-
-                - In testing we want to perform at the best of our capabilities,
-                so we only consider exploitation regime.
-            """
-
-            match pretrain_mod:
-                case '':
-                    if train and np.random.rand() <= self.greedy:
-                        # Exploration
-                        # Get a random trial from a binomial (qt , 1/time_to_expiry)
-                        # Why are we enforcing on the exploration phase a TWAP approach? Should
-                        # not the algorithm figure out that selling a lot of shares on an early
-                        # point is not the best. Seems to me this is a way to reduce the exploration
-                        # phase substantially => try with letting the algo pick any qt available
-                        if self.unif:
-                            action = np.random.randint(low=self.env.action_space.start,high=self.env.action_space.n)
-                            return action
-                        
-                        qt, t = state[0, :]
-                        return binom(qt, self.env.dt/t).rvs()
-                                
-
-                    # Exploitation
-                    # Compute the q-value from all the possible actions [0,qt] and retrieve the action
-                    # that delivers the best overall q-value
-                    if self.action_as_in:
-                        x = self._compute_input(states=state.reshape(1,len(state)))
-                        # Remember that the first element of x is just a mute index
-                        predictions = self.policy_nn(tf.convert_to_tensor(x[:, 1:]))
-                    else:
-                        predictions = self.policy_nn(tf.convert_to_tensor(state.reshape(1,len(state))))
-                    best_action = np.argmax(predictions)
-                    return best_action
-                case 'start':
-                    if t == self.env.T:
-                        return self.env.q0
-                    return 0
-                case 'end':
-                    if t == self.env.dt:
-                        return self.env.q0
-                    return 0
-        
         def train(self):
-            pol_start,pol_end = self._pretrain()
-            tot_ep_rewards, tot_ep_losses, history = super(DDQN).train()
+            pol_start, pol_end = self._pretrain()
+            # Since we have modified the choose_action to our new needs,
+            # we can just call the parent class with train
+            tot_ep_rewards, tot_ep_losses, history = super(DDQN_tradexecution, self).train()
             return tot_ep_rewards, tot_ep_losses, history, pol_start, pol_end
         
+# The following two classes only work with 
+# the TradeExecution environment we have created
+class TWAP(DDQN):
+    """
+    Very simple agent that does not learn anything, just
+    replicates behaviour of a TWAP strategy
+    """
+    def __init__(self,sett):
+        super(TWAP, self).__init__(sett)
+
+    # We need to overwrite _agent_update and
+    # _soft_update_policy as they are called
+    # inside DDQN.train method
+    def _agent_update(self) -> int:
+        return 0
+    
+    def _soft_update_policy(self, ep:int) -> None:
+        pass
+
+    def choose_action(self, state):
+        return int(self.env.q0/self.env.N)
+    
+class RANDOM_TE(TWAP):
+    """
+    Random agent that executes a random number of shares
+    on each time step
+    """
+    def __init__(self,sett):
+        super(RANDOM_TE, self).__init__(sett)
+
+    def choose_action(self, state):
+        return np.random.randint(0, state[0]+1)
 
 class Agent_Performance():
     def __init__(self, rewards:list[np.array], losses:list[np.array], solved_func, solved_rew:float) -> None:
@@ -448,7 +487,7 @@ class Agent_Performance():
         know if the env is solved.
         solved_rew : if solved_func==solved_rew, then env is solved
         """
-        self.solver = solved_func
+        self.solv_cond = solved_func
         self.solved_rew = solved_rew
         self.rew = rewards
         self.loss = losses
@@ -500,7 +539,7 @@ class Agent_Performance():
         """
         Computes number of trials that were solved
         """
-        return sum([self.solver(trial)>=self.solved_rew for trial in self.rew])
+        return sum([self.solv_cond(trial)>=self.solved_rew for trial in self.rew])
     
     def _max_drawdown(self) -> float:
         """
@@ -518,7 +557,7 @@ class Agent_Performance():
     def _avg_ep_to_solve(self) -> float:
         ep_solv = []
         for trial in self.rew:
-            if self.solver(trial)>=self.solved_rew:
+            if self.solv_cond(trial)>=self.solved_rew:
                 # It assumes that env stops when it is solved
                 ep_solv.append(len(trial))
         
