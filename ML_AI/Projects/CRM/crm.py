@@ -1,8 +1,10 @@
 import dateparser
 import datetime
 import os
+import numpy as np
 import pandas as pd
 import re
+from scipy.stats import zscore
 import sqlite3
 from sqlite3 import Cursor, OperationalError
 from sklearn import linear_model
@@ -208,6 +210,13 @@ def create_dummies(df:pd.DataFrame, col:str) -> pd.DataFrame:
     # Format the columns according to the table 1
     dummies.columns = [f'is_{col.lower().replace(" ","_")}' for col in dummies.columns]
     df = df.join(dummies)
+    df.drop([col], inplace=True, axis=1)
+
+    # In the case of home_ownership, there is a specific column
+    # we do not want to keep, is_none, so remove it
+    if col=='home_ownership':
+        df.drop(['is_none'], inplace=True, axis=1)
+
     return df
 
 def is_tuple(value) -> bool:
@@ -255,79 +264,46 @@ def fix_wrong_units(df:pd.DataFrame, want_fields:dict, fix_qties:dict) -> pd.Dat
                 print(f'col={col} with type {des_type} could not be transformed, check')
     return df
 
-def run_lasso_regression(df:pd.DataFrame,
-                         predictors:list[str],
-                         target:str,
-                         alpha:float=1.0) -> tuple[list[float],list[float],float,linear_model.Lasso]:
-    """
-    Functiond devoted to compute Lasso linear
-    regression. 
-    """
+def fix_fico(org_df:pd.DataFrame, tgt_df:pd.DataFrame) -> pd.DataFrame:
+    fico_range = (org_df['fico_range_high']-org_df['fico_range_low']).value_counts()
+    print(f'fico ranges are {fico_range}')
 
-    lasso = linear_model.Lasso(alpha=alpha,fit_intercept=False)
-    lasso.fit(X=df[predictors], y=df[target])
-    coefs = lasso.coef_
-    intercept = lasso.intercept_
-    score = lasso.score(X=df[predictors], y=df[target])
+    # In case both values are nan, we may need another tactic. Check if those
+    # cases actually happpen
+    both_missing = sum(org_df['fico_range_low'].isnull() & org_df['fico_range_high'].isnull())
+    print(f'Number of records with both fico_low and fico_high missing = {both_missing}')
 
-    return coefs,intercept,score,lasso
+    tgt_df.loc[tgt_df['fico_range_low'].isnull(),'fico_range_low'] = tgt_df.loc[tgt_df['fico_range_low'].isnull(),'fico_range_high'] - 4.0
+    tgt_df.loc[tgt_df['fico_range_high'].isnull(),'fico_range_high'] = tgt_df.loc[tgt_df['fico_range_high'].isnull(),'fico_range_low'] + 4.0
 
-def fix_nans(df:pd.DataFrame) -> pd.DataFrame:
-    # We will treat Nans a bit differently depending on their source
-    pass
+    return tgt_df
 
-    # For the case of Nans in employment length, the most straightforward
-    # relationship is to link it with the age of the borrower. In order
-    # to do so, we can run an ordinary least square regression of the
-    # employment length wrt the age of the borrower. Another approach
-    # is to link with the reported annual income provided by the user
-    # , as we expect workers with longer annual income to have
-    # longer employment contracts
+def create_quantiles(df:pd.DataFrame, bin_type:str='qcut') -> pd.DataFrame:
+    # Select columns that are continous, contain float
+    # numbers, and generate quantiles for them. Note that
+    # the bins generated for these quantiles are not in terms
+    # of frequency, equally spacing the values of that column.
+    # Cut will generate basically the bins of a historigram,
+    # whereas qcut will generate bins that contain the same
+    # number of data points.
+
+    # Add to this list the ones that contain integers but
+    # have a semi-continous range of values. We are including
+    # these as the idea is that the groups generated have
+    # big enough size
+
+    des_qtiles = [col for col,coltype in wanted_fields.items() if coltype==float]
+    des_qtiles.extend(['loan_amnt', 'annual_inc', 'fico_range_high', 'open_acc',
+                   'age', 'revol_bal'])
+
+    for col in des_qtiles:
+        new_col = f'{col}_qtile'
+        if bin_type=='cut':
+            df[new_col] = pd.cut(df[col], 10, labels=False)
+        else:
+            df[new_col] = pd.qcut(df[col], 10, labels=False)
     
-    #fix_emp_length
-    # for the emp_length we will try with age.
-    emp_len_by_age = df.groupby(['age']).agg({'emp_length':'median'})
-    emp_len_by_ = df.groupby(['emp_length']).agg({'age':'median'})
-
-    # Checking with demographic features does not seem to provide any
-    # meaningful insight.
-
-    # Check with credit features. For instance, 
-    df['interest_rate']
-
-
-    # We also expect higher employment contract lengths to have
-    # more favorable interest conditions
-
-
-    # For the fico_range_high, the first constraint we have
-    # to pass is that its value >= fico_range_low. FICO values
-    # are an indicator representing the credit quality of the
-    # borrower. The main factors determining the value of a FICO
-    # score are the payment history,the current level of indebtedness,
-    # the type of credit used, the length of the credit history 
-    # and new credit accounts.
-    
-    #fix_fico_score
-
-
-    # revol_util is the amount of credit the borrower is using relative
-    # to all available revolving credit
-    
-    #fix_revol_util
-
-    # mort_acc, is the number of mortatge_accounts. Note we have
-    # open_acc, which is the total number of open credit lines
-    # by the borrower, which sets an upper limit for this amount
-    
-    #fix_mort_acc
-
-    # pub_rec_bankruptcies, is the number of public 
-    # record bankruptcies. We have pub_rec, which is the
-    # number of derogatory public records, which can be
-    # used as an upper limit for this qty
-    
-    #fix_pub_rec_bankruptcies
+    return df
 
 path = "/home/axelbm23/Code/ML_AI/Projects/CRM/customer_data.sqlite3"
 
@@ -387,6 +363,8 @@ purpose = db.create_df("SELECT * from api_purpose;")
 # the values in oldcustomer database do not start with that
 # suffix. 
 addr_state = db.create_df("SELECT * from api_state;")
+subgrade = db.create_df("SELECT * from api_subgrade;")
+home_ownership = db.create_df("SELECT * from api_homeownership;")
 
 for table in desired_tables:
 
@@ -405,7 +383,7 @@ for table in desired_tables:
     # of a single value (e.g (72000.0, 80000.0]) 
     # For those cases, compute the mean.
     # Auxiliary column to debug
-    df['table'] = table
+    #df['table'] = table
     dfs.append(df)
     
 df = pd.concat(dfs)
@@ -414,42 +392,119 @@ df = pd.concat(dfs)
 df = fix_wrong_units(df, wanted_fields, fix_qties)
 
 # Compute percentage of NaN values for each column
-nans_per_col = df.isnull().sum()*100.0/len(df)
+nans_per_col = df.isnull().sum()
+nans_per_col_dist = nans_per_col*100.0/len(df)
+cols_with_nans = df.columns[df.isnull().any()]
 
 # For the number of public_rec_bankruptcies and
 # revol_util, the numbers are below the 0.05%, a number
 # of observations so small that we assume no statistical
 # difference will be imposed by removing these faulty records
 
-# One try will to impose min_max normalization in the data
-# and try to predict the missing values with the rest
+# The whole concept of NaN replacement is to ensure
+# that the original distributions of values for each
+# of the missing targets remains unaffected once we
+# have replaced them with the synthetic data.
+# Therefore, we do not want to add a bias on the
+# the distribution of values with out choice
 
 
-#print(df)
+# TO-DO! DO NOT THINK ANYTHING, JUST IMPLEMENT THIS!
+# So what we will generate quantiles for the continous
+# variables, then groupby all the categories and
+# replace the nans on each category with the medians
+# of those groups. Compute the distributions before
+# and after the replacement to ensure we did not add
+# any artifact. Also, do the replacement at the end, 
+# to ensure that the order at which we replace the NaNs
+# is irrelevant (keep the indexs of row,col to replace it
+# later)
+
+df = create_quantiles(df)
+gbpy_cols = ['loan_status', 'term', 'emp_length',
+             'pub_rec', 'mort_acc', 
+             'pub_rec_bankruptcies', 'pay_status',
+             'home_ownership_id', 'verification_status_id', 'purpose_id',
+             'addr_state_id']
+
+gbpy_cols.extend([col for col in df.columns if col.endswith('_qtile')])
+
+# For each of the missing cols, we will select which columns we want to groupby
+# with
+# TO-DO: Assing columns that are related with the missing qties. For now we will use
+# all.
+
+# emp_length => age_qtile,  annual_inc_qtile, verification_status_id, addr_state (demographic factors)
+# fico_range_low/high => solved
+# revol_util => revol_bal_qtile, open_acc_qtile, dti => measure of how much credit we are using from all available credit
+# mort_acc => home_ownership, purpose, open_acc => number of mortatge accounts
+# pub_rec_bankruptcies => loan_status, dti, pub_rec => measures of late payments
+
+demographic_fact = ['age_qtile', 'annual_inc_qtile']
+credit_usage_fact = ['revol_bal_qtile', 'open_acc_qtile', 'annual_inc_qtile']
+mort_fact = ['annual_inc_qtile']
+default_factors = ['pub_rec', 'pay_status']
+
+predictors = {'emp_length':demographic_fact,
+              'revol_util':credit_usage_fact,
+              'mort_acc':mort_fact,
+              'pub_rec_bankruptcies':default_factors}
+
+def fix_nans(df:pd.DataFrame, faulty_magn:dict, method:str='median') -> pd.DataFrame:
+    org_table = df.copy()
+
+    # In the case of nans in the FICO column, we can easily extract
+    # its value from the low-high, as it is shown, the difference
+    # between those two values remains constant over the entire dataset
+    df = fix_fico(org_table, df)
+
+    for target_col, predictors in faulty_magn.items():
+        print(target_col)
+        # Select the desired columns to groupby with.
+        # Make sure we do not groupby the column we are trying
+        # to predict.
+        new_values = org_table.groupby(predictors).agg({target_col:method}).reset_index()
+        
+        # Change the name of the predicted value to ease further manipulation
+        col_est = f'{target_col}_estimated'
+        new_values.rename(columns={target_col:col_est}, inplace=True)
+
+        df = pd.merge(df, new_values, left_on=predictors, right_on=predictors, how='left')
+        
+        # Finally assing the new value generated only to the rows that have a missing value
+        df.loc[df[target_col].isnull(), target_col] = df.loc[df[target_col].isnull(), col_est]
+        # Check if there are any nans in the computed target
+        if any(df[target_col].isnull()):
+            raise ValueError(f'target_col={target_col} still contains Nans, try to increase'
+                  f'the group size')
+        # Make sure compute value is type conformant
+        df[target_col] = df[target_col].astype(wanted_fields[target_col])
+
+        # Remove the auxiliar column
+        df.drop([col_est], axis=1, inplace=True)
+
+    return df
+
+df = fix_nans(df, predictors)
+
+# Remove the extra columns
+df = df.loc[:, df.columns.isin(wanted_fields.keys())]
 
 # After the NaN treatment, no NaNs should be present, assert it
-#if any(df.isnull()):
-#    raise ValueError(f'DataFrame from table {table} contains Nans, check!')
+if df.isnull().sum().sum()!=0:
+    raise ValueError(f'DataFrame still contains Nans, check!')
 
 # Create the dummy variables
-#df = create_dummies(df, 'verificationstatus')
-#df = create_dummies(df, 'homeownership')
+df = create_dummies(df, 'verification_status')
+df = create_dummies(df, 'home_ownership')
+
+# Rename _id columns to make them conformant with the instructions
+renamed = dict((col, col[:-3]) for col in df.columns if col.endswith('_id'))
+df.rename(columns=renamed, inplace=True)
+
+# Check that the output dataframe has exactly 32 columns
+print(f'df correct columns = {len(df.columns)==32}')
 
 # Write to csv
-#output_file = f'{os.getcwd()}/final_dataset.csv'
-#df.to_csv(output_file, index=False)
-
-# # PIPELINE
-# 1. Perform some explanatory analysis on the content of the tables
-# 2. For each dataset:
-    # 2.1 Standarize columns if there are any missing 
-    # 2.2 Create the columns for the ones missing (id into normal variables)
-    # 3.3 Create the dummies
-# 4. Merge all data into a single dataframe. Perform NaN treatment, etc
-# 5. Write the data into a csv file.
-
-# HOMEOWNERSHIP => integer, but we need the categorical values for the classy
-# PURPOSE => integer, we do not need the name, just the purpose id
-# SUBGRADE => integer, so we need the id (we can skip querying it for the newcust)
-# VERIFICATIONSTATUS => integer, but we need the categoricals as well
-# STATE => integer, we do not need the categorical values
+output_file = f'{os.getcwd()}/final_dataset.csv'
+df.to_csv(output_file, index=False)
