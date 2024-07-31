@@ -1,7 +1,9 @@
 import dateparser
 import datetime
-import os
+import missingno as msno
+import matplotlib.pyplot as plt
 import numpy as np
+import os
 import pandas as pd
 import re
 from scipy.stats import ks_2samp
@@ -304,18 +306,66 @@ def create_quantiles(df:pd.DataFrame, bin_type:str='qcut') -> pd.DataFrame:
     
     return df
 
-def check_dis_equality(samp_1:np.array, samp_2:np.array, ci:float=0.05) -> bool:
+def check_dis_equality(samp_1:pd.Series, samp_2:pd.Series, ci:float=0.05) -> None:
     """
     Function that prints True if sample_1 and sample_2
     come from the same distribution
     ci: confidence interval
     """
-
     result = ks_2samp(samp_1, samp_2)
 
-    return result
+    pval = result.pvalue
 
-path = f"{os.getcwd()}/customer_data.sqlite3"
+    if pval > ci:
+        print(f"sample1 and sample2 come from the same distribution, "\
+              f"pval={round(pval, 3)}!")
+    else:
+        print(f"sample1 and sample2 DO NOT come from the same distribution, "\
+              f"pval={round(pval, 3)}")
+    pass
+
+def fix_nans(org_df: pd.DataFrame, df:pd.DataFrame, nan_col:str, pred:list[str], method:str='median') -> pd.DataFrame:
+    """
+    Takes an original dataframe, and fills the nans present in nan_col
+    with the median of values for that column specified in list of columns
+    in pred. The method used to replace those nans is specified by method
+    """
+
+    # Select the desired columns to groupby with.
+    # Make sure we do not groupby the column we are trying
+    # to predict.
+    new_values = org_df.groupby(pred).agg({nan_col:method}).reset_index()
+    
+    # Change the name of the predicted value to ease further manipulation
+    col_est = f'{nan_col}_estimated'
+    new_values.rename(columns={nan_col:col_est}, inplace=True)
+
+    df = pd.merge(df, new_values, left_on=pred, right_on=pred, how='left')
+    
+    # Finally assing the new value generated only to the rows that have a missing value
+    df.loc[df[nan_col].isnull(), nan_col] = df.loc[df[nan_col].isnull(), col_est]
+    # Check if there are any nans in the computed target
+    if any(df[nan_col].isnull()):
+        raise ValueError(f'target_col={nan_col} still contains Nans, try to increase'
+                f'the group size')
+    # Make sure compute value is type conformant
+    df[nan_col] = df[nan_col].apply(lambda x: round(x) if wanted_fields[nan_col]==int else wanted_fields[nan_col](x))
+
+    # Remove the auxiliar column
+    df.drop([col_est], axis=1, inplace=True)
+
+    return df
+
+def print_nans_per_col(df:pd.DataFrame) -> None:
+    """
+    Prints NaNs per column, purely informative
+    """
+    nans_per_col = df.isnull().sum()
+    nans_per_col_dist = nans_per_col*100.0/len(df)
+    print('Distribution of NaNs per columns')
+    print(nans_per_col_dist[nans_per_col_dist!=0.0])
+
+path = f"{os.path.abspath(os.path.dirname(__file__))}/customer_data.sqlite3"
 
 fix_qties = {'loan_amnt':('k',1_000),
                'term':('y',12)}
@@ -325,16 +375,16 @@ wanted_fields = {'loan_status':bool,
                  'term':int,
                  'int_rate':float,
                  'installment':float,
-                 'sub_grade_id':int, # need to remove the id at the end
+                 'sub_grade_id':int,
                  'emp_length':int,
                  'home_ownership':str,
-                 'home_ownership_id':int, # need to remove the id at the end
+                 'home_ownership_id':int,
                  'annual_inc':int,
                  'verification_status':str,
-                 'verification_status_id':int, # need to remove the id at the end
+                 'verification_status_id':int,
                  'issue_d':datetime.datetime,
-                 'purpose_id':int, # need to remove the id at the end
-                 'addr_state_id':int, # need to remove the id at the end
+                 'purpose_id':int,
+                 'addr_state_id':int,
                  'dti':float,
                  'fico_range_low':int,
                  'fico_range_high':int,
@@ -351,30 +401,15 @@ wanted_fields = {'loan_status':bool,
 db = sql_data(path)
 all_tables = db.get_all_tables()
 
-for table in all_tables:
-    query = f"SELECT * from {table} limit 10;"
-    df = db.create_df(query)
-    print(df.columns)
+#for table in all_tables:
+#    query = f"SELECT * from {table} limit 10;"
+#    df = db.create_df(query)
+    #print(df.columns)
 
 
 # Upon inspection, tables containing most of the data are newcustomer and oldcustomer 
 desired_tables = ['api_oldcustomer', 'api_newcustomer']
 dfs = []
-oldcustomer = db.create_df("SELECT * from api_oldcustomer;")
-newcustomer = db.create_df("SELECT * from api_newcustomer;")
-
-# So for the oldcustomer table, there are some case labels that
-# do not match exactly the ones in purpose table. Format them
-# so that they match
-purpose = db.create_df("SELECT * from api_purpose;")
-
-# api_state values start with USA, whereas
-# the values in oldcustomer database do not start with that
-# suffix. 
-addr_state = db.create_df("SELECT * from api_state;")
-subgrade = db.create_df("SELECT * from api_subgrade;")
-home_ownership = db.create_df("SELECT * from api_homeownership;")
-
 for table in desired_tables:
 
     # Import the data
@@ -391,41 +426,16 @@ for table in desired_tables:
     # 4. annual_inc has a range for some observations instead
     # of a single value (e.g (72000.0, 80000.0]) 
     # For those cases, compute the mean.
-    # Auxiliary column to debug
-    #df['table'] = table
     dfs.append(df)
     
 df = pd.concat(dfs)
 
 # Fix wrong quantities and assign proper format to columns
 df = fix_wrong_units(df, wanted_fields, fix_qties)
-
-# Compute percentage of NaN values for each column
-nans_per_col = df.isnull().sum()
-nans_per_col_dist = nans_per_col*100.0/len(df)
-cols_with_nans = df.columns[df.isnull().any()]
-
-# For the number of public_rec_bankruptcies and
-# revol_util, the numbers are below the 0.05%, a number
-# of observations so small that we assume no statistical
-# difference will be imposed by removing these faulty records
-
-# The whole concept of NaN replacement is to ensure
-# that the original distributions of values for each
-# of the missing targets remains unaffected once we
-# have replaced them with the synthetic data.
-# Therefore, we do not want to add a bias on the
-# the distribution of values with out choice
-
+print_nans_per_col(df)
+# Looking at the distributions of NaNs, seems reasonable
+# to try to impute them
 df = create_quantiles(df)
-gbpy_cols = ['loan_status', 'term', 'emp_length',
-             'pub_rec', 'mort_acc', 
-             'pub_rec_bankruptcies', 'pay_status',
-             'home_ownership_id', 'verification_status_id', 'purpose_id',
-             'addr_state_id']
-
-gbpy_cols.extend([col for col in df.columns if col.endswith('_qtile')])
-
 
 # emp_length => age_qtile,  annual_inc_qtile, verification_status_id, addr_state (demographic factors)
 # fico_range_low/high => solved
@@ -443,47 +453,34 @@ predictors = {'emp_length':demographic_fact,
               'mort_acc':mort_fact,
               'pub_rec_bankruptcies':default_factors}
 
-def fix_nans(df:pd.DataFrame, faulty_magn:dict, method:str='median') -> pd.DataFrame:
-    org_table = df.copy()
+# Perform NaN imputation
+org_df = df.copy()
+df = fix_fico(org_df, df)
+print('Checking FICO sanity')
+check_dis_equality(org_df.loc[~org_df['fico_range_high'].isnull(),'fico_range_high'],
+                   df['fico_range_high'])
 
-    # In the case of nans in the FICO column, we can easily extract
-    # its value from the low-high, as it is shown, the difference
-    # between those two values remains constant over the entire dataset
-    org_fico = org_table['fico_range_high']
-    df = fix_fico(org_table, df)
-    mod_fico = df['fico_range_high']
+def plot_hist(org_df:pd.DataFrame, nan_tgt:str, tgt:str):
+    # Function that computes two histograms, one
+    # for the population that contains nans,
+    # the other for the population that does not contain
+    # nans
+    plt.hist(org_df.loc[~org_df[nan_tgt].isnull(), tgt], label='not_nan')
+    plt.hist(org_df.loc[org_df[nan_tgt].isnull(), tgt], label='nan')
+    plt.title(f'Histogram of {tgt} with nans in {nan_tgt}')
+    plt.legend()
+    plt.show()
 
-    res = check_dis_equality(org_fico, mod_fico)
+def plt_scatter(df:pd.DataFrame, x:str, y:str, gpby:list[str]):
+    fig,ax = plt.subplots()
+    for key,group in df.groupby(gpby):
+        ax.plot(group[x],group[y], linestyle='-', marker='o', label=key)
+    ax.set_xlabel(x)
+    ax.set_ylabel(y)
+    ax.legend(title=gpby)
+    ax.grid(True)
+    plt.show()
 
-
-    for target_col, predictors in faulty_magn.items():
-        print(target_col)
-        # Select the desired columns to groupby with.
-        # Make sure we do not groupby the column we are trying
-        # to predict.
-        new_values = org_table.groupby(predictors).agg({target_col:method}).reset_index()
-        
-        # Change the name of the predicted value to ease further manipulation
-        col_est = f'{target_col}_estimated'
-        new_values.rename(columns={target_col:col_est}, inplace=True)
-
-        df = pd.merge(df, new_values, left_on=predictors, right_on=predictors, how='left')
-        
-        # Finally assing the new value generated only to the rows that have a missing value
-        df.loc[df[target_col].isnull(), target_col] = df.loc[df[target_col].isnull(), col_est]
-        # Check if there are any nans in the computed target
-        if any(df[target_col].isnull()):
-            raise ValueError(f'target_col={target_col} still contains Nans, try to increase'
-                  f'the group size')
-        # Make sure compute value is type conformant
-        df[target_col] = df[target_col].astype(wanted_fields[target_col])
-
-        # Remove the auxiliar column
-        df.drop([col_est], axis=1, inplace=True)
-
-    return df
-
-df = fix_nans(df, predictors)
 
 # Remove the extra columns
 df = df.loc[:, df.columns.isin(wanted_fields.keys())]
@@ -501,6 +498,7 @@ renamed = dict((col, col[:-3]) for col in df.columns if col.endswith('_id'))
 df.rename(columns=renamed, inplace=True)
 
 # Check that the output dataframe has exactly 32 columns
+# The ones provided in the case
 print(f'df correct columns = {len(df.columns)==32}')
 
 # Write to csv
