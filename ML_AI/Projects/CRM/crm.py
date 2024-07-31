@@ -365,6 +365,17 @@ def print_nans_per_col(df:pd.DataFrame) -> None:
     print('Distribution of NaNs per columns')
     print(nans_per_col_dist[nans_per_col_dist!=0.0])
 
+def plot_hist(org_df:pd.DataFrame, df:pd.DataFrame, nan_tgt:str):
+    # Function that computes two histograms, one
+    # for the population that contains nans,
+    # the other for the population that does not contain
+    # nans
+    plt.hist(df.loc[df[nan_tgt].isnull(), nan_tgt], label='after')
+    plt.hist(org_df.loc[~org_df[nan_tgt].isnull(), nan_tgt], label='before')
+    plt.title(f'Histogram of before/after NaN imputation')
+    plt.legend()
+    plt.show()
+
 path = f"{os.path.abspath(os.path.dirname(__file__))}/customer_data.sqlite3"
 
 fix_qties = {'loan_amnt':('k',1_000),
@@ -397,17 +408,8 @@ wanted_fields = {'loan_status':bool,
                  'age':int,
                  'pay_status':int}
 
-
+print(f"Querying db...")
 db = sql_data(path)
-all_tables = db.get_all_tables()
-
-#for table in all_tables:
-#    query = f"SELECT * from {table} limit 10;"
-#    df = db.create_df(query)
-    #print(df.columns)
-
-
-# Upon inspection, tables containing most of the data are newcustomer and oldcustomer 
 desired_tables = ['api_oldcustomer', 'api_newcustomer']
 dfs = []
 for table in desired_tables:
@@ -437,12 +439,6 @@ print_nans_per_col(df)
 # to try to impute them
 df = create_quantiles(df)
 
-# emp_length => age_qtile,  annual_inc_qtile, verification_status_id, addr_state (demographic factors)
-# fico_range_low/high => solved
-# revol_util => revol_bal_qtile, open_acc_qtile, dti => measure of how much credit we are using from all available credit
-# mort_acc => home_ownership, purpose, open_acc => number of mortatge accounts
-# pub_rec_bankruptcies => loan_status, dti, pub_rec => measures of late payments
-
 demographic_fact = ['age_qtile', 'annual_inc_qtile']
 credit_usage_fact = ['revol_bal_qtile', 'open_acc_qtile', 'annual_inc_qtile']
 mort_fact = ['annual_inc_qtile']
@@ -457,19 +453,18 @@ predictors = {'emp_length':demographic_fact,
 org_df = df.copy()
 df = fix_fico(org_df, df)
 print('Checking FICO sanity')
-check_dis_equality(org_df.loc[~org_df['fico_range_high'].isnull(),'fico_range_high'],
+check_dis_equality(org_df.loc[~org_df['fico_range_high'].isnull(), 'fico_range_high'],
                    df['fico_range_high'])
 
-def plot_hist(org_df:pd.DataFrame, nan_tgt:str, tgt:str):
-    # Function that computes two histograms, one
-    # for the population that contains nans,
-    # the other for the population that does not contain
-    # nans
-    plt.hist(org_df.loc[~org_df[nan_tgt].isnull(), tgt], label='not_nan')
-    plt.hist(org_df.loc[org_df[nan_tgt].isnull(), tgt], label='nan')
-    plt.title(f'Histogram of {tgt} with nans in {nan_tgt}')
-    plt.legend()
-    plt.show()
+for nantgt,pred in predictors.items():
+    df = fix_nans(org_df, df, nantgt, pred, method='median')
+    print(f'Checking {nantgt} sanity')
+    check_dis_equality(org_df.loc[~org_df[nantgt].isnull(),nantgt],
+                   df[nantgt])
+    
+    # Plot distributuon of values before/after the Nan replacement
+    plot_hist(org_df, df, nantgt)
+
 
 def plt_scatter(df:pd.DataFrame, x:str, y:str, gpby:list[str]):
     fig,ax = plt.subplots()
@@ -480,7 +475,6 @@ def plt_scatter(df:pd.DataFrame, x:str, y:str, gpby:list[str]):
     ax.legend(title=gpby)
     ax.grid(True)
     plt.show()
-
 
 # Remove the extra columns
 df = df.loc[:, df.columns.isin(wanted_fields.keys())]
@@ -502,5 +496,5 @@ df.rename(columns=renamed, inplace=True)
 print(f'df correct columns = {len(df.columns)==32}')
 
 # Write to csv
-output_file = f'{os.getcwd()}/final_dataset.csv'
+output_file = f'{os.path.abspath(os.path.dirname(__file__))}/final_dataset.csv'
 df.to_csv(output_file, index=False)
