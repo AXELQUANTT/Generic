@@ -4,10 +4,9 @@ import os
 import numpy as np
 import pandas as pd
 import re
-from scipy.stats import zscore
+from scipy.stats import ks_2samp
 import sqlite3
 from sqlite3 import Cursor, OperationalError
-from sklearn import linear_model
 from typing import Any, Tuple, Optional
 
 class sql_data():
@@ -238,13 +237,13 @@ def fix_wrong_units(df:pd.DataFrame, want_fields:dict, fix_qties:dict) -> pd.Dat
         if des_type==datetime.datetime:
             try:
                 df[col] = df[col].apply(lambda x: dateparser.parse(x))
-            except ValueError as e:
+            except ValueError:
                 print(f'col={col} with type datetime could not be transformed, check')
 
         elif col=='annual_inc':
             try:
                 df[col] = df[col].apply(lambda x: x if pd.isnull(x) else des_type(mean_from_tuple(x)) if is_tuple(x) else des_type(x))
-            except ValueError as e:
+            except ValueError:
                 print(f'col={col} could not be transformed, check')
 
         elif col in fix_qties:
@@ -254,13 +253,13 @@ def fix_wrong_units(df:pd.DataFrame, want_fields:dict, fix_qties:dict) -> pd.Dat
                 df[col] = df[col].apply(lambda x: x if pd.isnull(x) else des_type(float(x.lower()[:-1])*multiplier)
                                          if (isinstance(x, str) and x.lower().endswith(error)) else des_type(x))
                 
-            except ValueError as e:
+            except ValueError:
                 print(f'col={col} with type {des_type} could not be transformed, check')
 
         else:
             try:
                 df[col] = df[col].apply(lambda x: x if pd.isnull(x) else des_type(x))
-            except ValueError as e:
+            except ValueError:
                 print(f'col={col} with type {des_type} could not be transformed, check')
     return df
 
@@ -305,9 +304,19 @@ def create_quantiles(df:pd.DataFrame, bin_type:str='qcut') -> pd.DataFrame:
     
     return df
 
-path = "/home/axelbm23/Code/ML_AI/Projects/CRM/customer_data.sqlite3"
+def check_dis_equality(samp_1:np.array, samp_2:np.array, ci:float=0.05) -> bool:
+    """
+    Function that prints True if sample_1 and sample_2
+    come from the same distribution
+    ci: confidence interval
+    """
 
-# TO-DO: Read wrong quantities from file
+    result = ks_2samp(samp_1, samp_2)
+
+    return result
+
+path = f"{os.getcwd()}/customer_data.sqlite3"
+
 fix_qties = {'loan_amnt':('k',1_000),
                'term':('y',12)}
 
@@ -408,18 +417,6 @@ cols_with_nans = df.columns[df.isnull().any()]
 # Therefore, we do not want to add a bias on the
 # the distribution of values with out choice
 
-
-# TO-DO! DO NOT THINK ANYTHING, JUST IMPLEMENT THIS!
-# So what we will generate quantiles for the continous
-# variables, then groupby all the categories and
-# replace the nans on each category with the medians
-# of those groups. Compute the distributions before
-# and after the replacement to ensure we did not add
-# any artifact. Also, do the replacement at the end, 
-# to ensure that the order at which we replace the NaNs
-# is irrelevant (keep the indexs of row,col to replace it
-# later)
-
 df = create_quantiles(df)
 gbpy_cols = ['loan_status', 'term', 'emp_length',
              'pub_rec', 'mort_acc', 
@@ -429,10 +426,6 @@ gbpy_cols = ['loan_status', 'term', 'emp_length',
 
 gbpy_cols.extend([col for col in df.columns if col.endswith('_qtile')])
 
-# For each of the missing cols, we will select which columns we want to groupby
-# with
-# TO-DO: Assing columns that are related with the missing qties. For now we will use
-# all.
 
 # emp_length => age_qtile,  annual_inc_qtile, verification_status_id, addr_state (demographic factors)
 # fico_range_low/high => solved
@@ -456,7 +449,12 @@ def fix_nans(df:pd.DataFrame, faulty_magn:dict, method:str='median') -> pd.DataF
     # In the case of nans in the FICO column, we can easily extract
     # its value from the low-high, as it is shown, the difference
     # between those two values remains constant over the entire dataset
+    org_fico = org_table['fico_range_high']
     df = fix_fico(org_table, df)
+    mod_fico = df['fico_range_high']
+
+    res = check_dis_equality(org_fico, mod_fico)
+
 
     for target_col, predictors in faulty_magn.items():
         print(target_col)
