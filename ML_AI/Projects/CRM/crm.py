@@ -370,11 +370,59 @@ def plot_hist(org_df:pd.DataFrame, df:pd.DataFrame, nan_tgt:str):
     # for the population that contains nans,
     # the other for the population that does not contain
     # nans
-    plt.hist(df.loc[df[nan_tgt].isnull(), nan_tgt], label='after')
-    plt.hist(org_df.loc[~org_df[nan_tgt].isnull(), nan_tgt], label='before')
-    plt.title(f'Histogram of before/after NaN imputation')
+    plt.hist(df[nan_tgt], label='after', alpha=0.75)
+    plt.hist(org_df.loc[~org_df[nan_tgt].isnull(), nan_tgt], label='before', alpha=0.75)
+    plt.title(f'Histogram of {nan_tgt} before/after NaN imputation')
     plt.legend()
     plt.show()
+
+def merge_db_tables() -> pd.DataFrame:
+    """
+    Function devoted to query the db tables containing the information
+    and generate a single dataframe
+    """
+
+    desired_tables = ['api_oldcustomer', 'api_newcustomer']
+    dfs = []
+    for table in desired_tables:
+
+        # Import the data
+        df = db.import_all_data(table)
+
+        # Upon inspection we see that there are three columns
+        # that contain wrong quantities.
+        # 1. loan_amnt, some rows are in string format with 'xx.k'
+        # 2. term, some rows are in years. We assume payments are
+        # monthly, so we can multiply that factor for 12 to obtain
+        # the number of payments in the loan.
+        # 3. issued has different datetime formats, one contain
+        # Days, others just Years and Months. Standarize them.
+        # 4. annual_inc has a range for some observations instead
+        # of a single value (e.g (72000.0, 80000.0]) 
+        # For those cases, compute the mean.
+        dfs.append(df)
+
+    return pd.concat(dfs)
+
+def perform_nan_imputation(df:pd.DataFrame,
+                           predictors:dict) -> pd.DataFrame:
+    org_df = df.copy()
+    df = fix_fico(org_df, df)
+    print('Checking FICO sanity')
+    check_dis_equality(org_df.loc[~org_df['fico_range_high'].isnull(), 'fico_range_high'],
+                    df['fico_range_high'])
+    plot_hist(org_df, df, 'fico_range_high')
+
+    for nantgt,pred in predictors.items():
+        df = fix_nans(org_df, df, nantgt, pred, method='median')
+        print(f'Checking {nantgt} sanity')
+        check_dis_equality(org_df.loc[~org_df[nantgt].isnull(),nantgt],
+                    df[nantgt])
+        
+        # Plot distributuon of values before/after the Nan replacement
+        plot_hist(org_df, df, nantgt)
+
+    return df
 
 path = f"{os.path.abspath(os.path.dirname(__file__))}/customer_data.sqlite3"
 
@@ -410,34 +458,31 @@ wanted_fields = {'loan_status':bool,
 
 print(f"Querying db...")
 db = sql_data(path)
-desired_tables = ['api_oldcustomer', 'api_newcustomer']
-dfs = []
-for table in desired_tables:
+df = merge_db_tables()
 
-    # Import the data
-    df = db.import_all_data(table)
-
-    # Upon inspection we see that there are three columns
-    # that contain wrong quantities.
-    # 1. loan_amnt, some rows are in string format with 'xx.k'
-    # 2. term, some rows are in years. We assume payments are
-    # monthly, so we can multiply that factor for 12 to obtain
-    # the number of payments in the loan.
-    # 3. issued has different datetime formats, one contain
-    # Days, others just Years and Months. Standarize them.
-    # 4. annual_inc has a range for some observations instead
-    # of a single value (e.g (72000.0, 80000.0]) 
-    # For those cases, compute the mean.
-    dfs.append(df)
-    
-df = pd.concat(dfs)
-
+print(f'Fixing wrong units')
 # Fix wrong quantities and assign proper format to columns
 df = fix_wrong_units(df, wanted_fields, fix_qties)
-print_nans_per_col(df)
 # Looking at the distributions of NaNs, seems reasonable
 # to try to impute them
+print_nans_per_col(df)
+
+print('Creating quantiles for analysis')
 df = create_quantiles(df)
+
+def plt_scatter(df:pd.DataFrame, x:str, y:str, gpby:list[str]):
+    fig,ax = plt.subplots()
+    if gpby==[]:
+        ax.plot(df[x],df[y], linestyle='-', marker='o', label=key)
+    else:
+        for key,group in df.groupby(gpby):
+            ax.plot(group[x],group[y], linestyle='-', marker='o', label=key)
+    ax.set_xlabel(x)
+    ax.set_ylabel(y)
+    ax.legend(title=gpby)
+    ax.grid(True)
+    plt.title(f'{y} vs {x}')
+    plt.show()
 
 demographic_fact = ['age_qtile', 'annual_inc_qtile']
 credit_usage_fact = ['revol_bal_qtile', 'open_acc_qtile', 'annual_inc_qtile']
@@ -449,32 +494,9 @@ predictors = {'emp_length':demographic_fact,
               'mort_acc':mort_fact,
               'pub_rec_bankruptcies':default_factors}
 
+
 # Perform NaN imputation
-org_df = df.copy()
-df = fix_fico(org_df, df)
-print('Checking FICO sanity')
-check_dis_equality(org_df.loc[~org_df['fico_range_high'].isnull(), 'fico_range_high'],
-                   df['fico_range_high'])
-
-for nantgt,pred in predictors.items():
-    df = fix_nans(org_df, df, nantgt, pred, method='median')
-    print(f'Checking {nantgt} sanity')
-    check_dis_equality(org_df.loc[~org_df[nantgt].isnull(),nantgt],
-                   df[nantgt])
-    
-    # Plot distributuon of values before/after the Nan replacement
-    plot_hist(org_df, df, nantgt)
-
-
-def plt_scatter(df:pd.DataFrame, x:str, y:str, gpby:list[str]):
-    fig,ax = plt.subplots()
-    for key,group in df.groupby(gpby):
-        ax.plot(group[x],group[y], linestyle='-', marker='o', label=key)
-    ax.set_xlabel(x)
-    ax.set_ylabel(y)
-    ax.legend(title=gpby)
-    ax.grid(True)
-    plt.show()
+df = perform_nan_imputation(df, predictors)
 
 # Remove the extra columns
 df = df.loc[:, df.columns.isin(wanted_fields.keys())]
@@ -493,8 +515,10 @@ df.rename(columns=renamed, inplace=True)
 
 # Check that the output dataframe has exactly 32 columns
 # The ones provided in the case
-print(f'df correct columns = {len(df.columns)==32}')
+if len(df.columns)!=32:
+    raise ValueError('df does not have the right columns, check!')
 
 # Write to csv
-output_file = f'{os.path.abspath(os.path.dirname(__file__))}/final_dataset.csv'
+output_path = os.path.abspath(os.path.dirname(__file__))
+output_file = f'{output_path}/final_dataset.csv'
 df.to_csv(output_file, index=False)
