@@ -1,14 +1,12 @@
 import dateparser
 import datetime
-import missingno as msno
 import matplotlib.pyplot as plt
-import numpy as np
 import os
 import pandas as pd
 import re
 from scipy.stats import ks_2samp
 import sqlite3
-from sqlite3 import Cursor, OperationalError
+from sqlite3 import Cursor
 from typing import Any, Tuple, Optional
 
 class sql_data():
@@ -18,7 +16,8 @@ class sql_data():
     def _create_connection(self) -> Cursor:
         """
         Creates sql connection to our db
-        """ 
+        """
+
         conn = sqlite3.connect(self.db)
         curr = conn.cursor()
         return conn, curr
@@ -27,6 +26,7 @@ class sql_data():
         """
         Opens a connection to the db and performs a query
         """
+
         conn, curr = self._create_connection()
         cursor = curr.execute(query)
         results = cursor.fetchall()
@@ -38,47 +38,16 @@ class sql_data():
         """
         Creates a pandas dataframe out of a query result (list)
         """
+
         data, colnames = self._query_db(query)
         df = pd.DataFrame(data, columns=colnames)
         return df
-    
-    def get_all_tables(self) -> list[Any]:
-        """
-        Retrieves all table names in the db
-        """
-        tables,_ = self._query_db("SELECT name FROM sqlite_master;")
-
-        # ignore sqlite_sequence, which only contains info about the autoincrement
-        return [table[0] for table in tables if table[0]!='sqlite_sequence']
-    
-    def get_columns_for_table(self, table_name:str, des_cols:list[str]) -> list[str]:
-        """
-        Retrieves all column names for a specific table name
-        """
-
-        # This will return a tuple, where the first element is the name of the column
-        table_cols, _ = self._query_db(f"SELECT name FROM PRAGMA_TABLE_INFO('{table_name}');")
-        
-        return [col[0] for col in table_cols if col[0] in des_cols]
-    
-    def get_table_for_column(self, col:str) -> Optional[list[str]]:
-        """
-        Retrieves the table name containing column=col
-        """ 
-        try:
-            res, _ = self._query_db(f"SELECT DISTINCT name FROM sqlite_master"\
-                        f" WHERE sql like '%{col}%';")
-        except OperationalError:
-            print(f'column name = {col} is not in the db')
-            res = None
-        
-        return res
     
     def _query_for_all_data(self, table:str) -> Optional[str]:
         """
         Creates query to get all the relevant information
         """ 
-        
+
         # This query is where most of the standarization of the columns happens
         # In the case of the api_newcustomer, all columns on it are the ids, so
         # we only need to retrieve the names from the other ones
@@ -137,12 +106,15 @@ class sql_data():
         return query
     
     def _add_faulty_data(self, df:pd.DataFrame, table:str, col:str):
+        """
+        Function devoted to fix wrong values present in columns
+        purpose and addr_state
+        """
+
         if table=='api_newcustomer':
             return df
         
         if col=='purpose':
-            # TO-DO: Instead of a dict, use a library to create the plural
-            # and then just do upper case
             correct_labels = {'debt_consolidation':'DEBT_CONSOLIDATIONS',
                               'other':'OTHER', 
                               'credit_card':'CREDIT_CARDS', 
@@ -165,7 +137,6 @@ class sql_data():
             return df
         
         if col=='addr_state':
-            # TO-DO: Add USA suffix to that col and merge
             df['addr_state'] = df['addr_state'].apply(lambda x: f'USA_{x.upper()}')
             api_state = self.create_df("SELECT name as addr_state, id as addr_state_id from api_state;")
             df = pd.merge(df, api_state, left_on='addr_state', right_on='addr_state', how='left')
@@ -174,6 +145,10 @@ class sql_data():
             return df
         
     def import_all_data(self, table:str) -> pd.DataFrame:
+        """
+        Main function of the class, gets the relevant
+        data from the two tables and fixes the wrong values
+        """
         query = self._query_for_all_data(table)
         df = self.create_df(query)
 
@@ -200,12 +175,15 @@ class sql_data():
             raise ValueError(f'table = {table} is missing the following fields => '\
                              f'{",".join([str(x) for x in set(wanted_fields)-set(df.columns)])}')
 
-        # TO-DO: Make sure all the data from external columns
-        # has the correct values
         return df
     
-# Create dummies for homeownership and verification_status
+
 def create_dummies(df:pd.DataFrame, col:str) -> pd.DataFrame:
+    """
+    Creates a dummy variable for dataframe df for the categorical
+    column specified by col
+    """
+
     # For each of different values in col, create a dummy column
     dummies = pd.get_dummies(df[col])
     # Format the columns according to the table 1
@@ -214,18 +192,27 @@ def create_dummies(df:pd.DataFrame, col:str) -> pd.DataFrame:
     df.drop([col], inplace=True, axis=1)
 
     # In the case of home_ownership, there is a specific column
-    # we do not want to keep, is_none, so remove it
+    # we do not want to keep (acc to instructions), is_none, 
+    # so remove it
     if col=='home_ownership':
         df.drop(['is_none'], inplace=True, axis=1)
 
     return df
 
 def is_tuple(value) -> bool:
+    """
+    Returns True if value contains a range as a string
+    """
+
     if isinstance(value, str):
         return '(' in value or ')' in value or '[' in value or ']' in value
     return False
 
 def mean_from_tuple(value) -> float:
+    """
+    Computes mean from two string values
+    """
+
     value = re.sub(r"[\([{})\]]", "", value)
     return 0.5*sum([float(x) for x in value.split(', ')])
 
@@ -233,7 +220,7 @@ def fix_wrong_units(df:pd.DataFrame, want_fields:dict, fix_qties:dict) -> pd.Dat
     """
     Function devoted to fix the values of those quantities that are wrong
     """
-    # TO-DO: Clean this logic, quite convoluted
+
     for col in want_fields.keys():
         des_type = want_fields[col]
         if des_type==datetime.datetime:
@@ -244,7 +231,8 @@ def fix_wrong_units(df:pd.DataFrame, want_fields:dict, fix_qties:dict) -> pd.Dat
 
         elif col=='annual_inc':
             try:
-                df[col] = df[col].apply(lambda x: x if pd.isnull(x) else des_type(mean_from_tuple(x)) if is_tuple(x) else des_type(x))
+                df[col] = df[col].apply(lambda x: x if pd.isnull(x) else des_type(mean_from_tuple(x)) 
+                                        if is_tuple(x) else des_type(x))
             except ValueError:
                 print(f'col={col} could not be transformed, check')
 
@@ -266,43 +254,41 @@ def fix_wrong_units(df:pd.DataFrame, want_fields:dict, fix_qties:dict) -> pd.Dat
     return df
 
 def fix_fico(org_df:pd.DataFrame, tgt_df:pd.DataFrame) -> pd.DataFrame:
-    fico_range = (org_df['fico_range_high']-org_df['fico_range_low']).value_counts()
-    print(f'fico ranges are {fico_range}')
+    """
+    Function computes the fico value from the low/high, depending
+    which one is valid
+    """
 
     # In case both values are nan, we may need another tactic. Check if those
     # cases actually happpen
     both_missing = sum(org_df['fico_range_low'].isnull() & org_df['fico_range_high'].isnull())
     print(f'Number of records with both fico_low and fico_high missing = {both_missing}')
 
-    tgt_df.loc[tgt_df['fico_range_low'].isnull(),'fico_range_low'] = tgt_df.loc[tgt_df['fico_range_low'].isnull(),'fico_range_high'] - 4.0
-    tgt_df.loc[tgt_df['fico_range_high'].isnull(),'fico_range_high'] = tgt_df.loc[tgt_df['fico_range_high'].isnull(),'fico_range_low'] + 4.0
+    tgt_df.loc[tgt_df['fico_range_low'].isnull(),'fico_range_low'] = tgt_df.loc[tgt_df['fico_range_low'].isnull(),
+                                                                                'fico_range_high'] - 4.0
+    tgt_df.loc[tgt_df['fico_range_high'].isnull(),'fico_range_high'] = tgt_df.loc[tgt_df['fico_range_high'].isnull(),
+                                                                                  'fico_range_low'] + 4.0
 
     return tgt_df
 
 def create_quantiles(df:pd.DataFrame, bin_type:str='qcut') -> pd.DataFrame:
-    # Select columns that are continous, contain float
-    # numbers, and generate quantiles for them. Note that
-    # the bins generated for these quantiles are not in terms
-    # of frequency, equally spacing the values of that column.
-    # Cut will generate basically the bins of a historigram,
-    # whereas qcut will generate bins that contain the same
-    # number of data points.
-
-    # Add to this list the ones that contain integers but
-    # have a semi-continous range of values. We are including
-    # these as the idea is that the groups generated have
-    # big enough size
+    """
+    Creates quantiles for a set of specified columns
+    """
 
     des_qtiles = [col for col,coltype in wanted_fields.items() if coltype==float]
     des_qtiles.extend(['loan_amnt', 'annual_inc', 'fico_range_high', 'open_acc',
-                   'age', 'revol_bal'])
+                   'age', 'revol_bal', 'pub_rec'])
 
     for col in des_qtiles:
         new_col = f'{col}_qtile'
-        if bin_type=='cut':
-            df[new_col] = pd.cut(df[col], 10, labels=False)
+        if bin_type=='cut' or col=='pub_rec':
+            # Compute quantiles on the dat => diff obs per group
+            bins = pd.cut(df.loc[~df[col].isnull(),col], 10, labels=False)
+            df.loc[~df[col].isnull(),new_col] = bins
         else:
-            df[new_col] = pd.qcut(df[col], 10, labels=False)
+            # Computes qtiles on the freq => same obs per group
+            df[new_col] = pd.qcut(df[col], 10, labels=False, duplicates='drop')
     
     return df
 
@@ -312,19 +298,19 @@ def check_dis_equality(samp_1:pd.Series, samp_2:pd.Series, ci:float=0.05) -> Non
     come from the same distribution
     ci: confidence interval
     """
+
     result = ks_2samp(samp_1, samp_2)
 
     pval = result.pvalue
 
     if pval > ci:
-        print(f"sample1 and sample2 come from the same distribution, "\
-              f"pval={round(pval, 3)}!")
+        print(f"sample1 and sample2 come from the same distribution")
     else:
-        print(f"sample1 and sample2 DO NOT come from the same distribution, "\
-              f"pval={round(pval, 3)}")
+        print(f"sample1 and sample2 DO NOT come from the same distribution")
     pass
 
-def fix_nans(org_df: pd.DataFrame, df:pd.DataFrame, nan_col:str, pred:list[str], method:str='median') -> pd.DataFrame:
+def fix_nans(org_df: pd.DataFrame, df:pd.DataFrame, nan_col:str, 
+             pred:list[str], method:str='median') -> pd.DataFrame:
     """
     Takes an original dataframe, and fills the nans present in nan_col
     with the median of values for that column specified in list of columns
@@ -332,8 +318,6 @@ def fix_nans(org_df: pd.DataFrame, df:pd.DataFrame, nan_col:str, pred:list[str],
     """
 
     # Select the desired columns to groupby with.
-    # Make sure we do not groupby the column we are trying
-    # to predict.
     new_values = org_df.groupby(pred).agg({nan_col:method}).reset_index()
     
     # Change the name of the predicted value to ease further manipulation
@@ -346,10 +330,11 @@ def fix_nans(org_df: pd.DataFrame, df:pd.DataFrame, nan_col:str, pred:list[str],
     df.loc[df[nan_col].isnull(), nan_col] = df.loc[df[nan_col].isnull(), col_est]
     # Check if there are any nans in the computed target
     if any(df[nan_col].isnull()):
-        raise ValueError(f'target_col={nan_col} still contains Nans, try to increase'
-                f'the group size')
+        raise ValueError(f'target_col={nan_col} still contains Nans, '\
+                         f'try to increase the group size')
     # Make sure compute value is type conformant
-    df[nan_col] = df[nan_col].apply(lambda x: round(x) if wanted_fields[nan_col]==int else wanted_fields[nan_col](x))
+    df[nan_col] = df[nan_col].apply(lambda x: round(x) if wanted_fields[nan_col]==int else 
+                                    wanted_fields[nan_col](x))
 
     # Remove the auxiliar column
     df.drop([col_est], axis=1, inplace=True)
@@ -360,21 +345,53 @@ def print_nans_per_col(df:pd.DataFrame) -> None:
     """
     Prints NaNs per column, purely informative
     """
+
     nans_per_col = df.isnull().sum()
     nans_per_col_dist = nans_per_col*100.0/len(df)
     print('Distribution of NaNs per columns')
     print(nans_per_col_dist[nans_per_col_dist!=0.0])
 
-def plot_hist(org_df:pd.DataFrame, df:pd.DataFrame, nan_tgt:str):
-    # Function that computes two histograms, one
-    # for the population that contains nans,
-    # the other for the population that does not contain
-    # nans
-    plt.hist(df[nan_tgt], label='after', alpha=0.75)
-    plt.hist(org_df.loc[~org_df[nan_tgt].isnull(), nan_tgt], label='before', alpha=0.75)
+def plot_hist(org_df:pd.DataFrame, df:pd.DataFrame, nan_tgt:str) -> None:
+    """
+    Computes histogram for a specific column over two different
+    dataframes
+    """
+
+    plt.hist(df[nan_tgt], label='after', alpha=0.7, color='skyblue')
+    plt.hist(org_df.loc[~org_df[nan_tgt].isnull(), nan_tgt], label='before', 
+             alpha=0.5, color='red')
     plt.title(f'Histogram of {nan_tgt} before/after NaN imputation')
-    plt.legend()
     plt.show()
+
+def plot_scatter(df:pd.DataFrame, x:str, y:str, gpby:list[str]):
+    """
+    Computes a scatter plot x,y grouping by df by gpby columns
+    """
+
+    fig,ax = plt.subplots()
+    if gpby==[]:
+        ax.plot(df[x],df[y], linestyle='-', marker='o')
+    else:
+        for key,group in df.groupby(gpby):
+            ax.plot(group[x],group[y], linestyle='-', marker='o', label=key)
+    ax.set_xlabel(x)
+    ax.set_ylabel(y)
+    ax.legend(title=gpby)
+    ax.grid(True)
+    plt.title(f'{y} vs {x}')
+    plt.show()
+
+def show_relationship(df:pd.DataFrame, nantgt:str, x:str, 
+                      gpby_data:list[str]=[], gpby_plot:list[str]=[]) -> None:
+    """
+    Pre-computes dataframes grouping them by gpby data and plots
+    them 
+    """
+
+    nonans_df = df.loc[~df[nantgt].isnull(),:]
+    gpby_df = nonans_df.groupby(gpby_data).agg({nantgt:'median'}).reset_index()
+
+    plot_scatter(gpby_df, x=x, y=nantgt, gpby=gpby_plot)
 
 def merge_db_tables() -> pd.DataFrame:
     """
@@ -405,10 +422,15 @@ def merge_db_tables() -> pd.DataFrame:
     return pd.concat(dfs)
 
 def perform_nan_imputation(df:pd.DataFrame,
-                           predictors:dict) -> pd.DataFrame:
+                           predictors:dict) -> Optional[pd.DataFrame]:
+    """
+    Function imputes Nan values for columns specified
+    in predictors.keys() using predictors.values() as resources
+    """
+
     org_df = df.copy()
     df = fix_fico(org_df, df)
-    print('Checking FICO sanity')
+    print('Checking fico sanity')
     check_dis_equality(org_df.loc[~org_df['fico_range_high'].isnull(), 'fico_range_high'],
                     df['fico_range_high'])
     plot_hist(org_df, df, 'fico_range_high')
@@ -422,7 +444,34 @@ def perform_nan_imputation(df:pd.DataFrame,
         # Plot distributuon of values before/after the Nan replacement
         plot_hist(org_df, df, nantgt)
 
+    # Remove the extra columns
+    df = df.loc[:, df.columns.isin(wanted_fields.keys())]
+
+    # After the NaN treatment, no NaNs should be present, assert it
+    if df.isnull().sum().sum()!=0:
+        raise ValueError(f'DataFrame still contains Nans, check!')
+    
     return df
+
+def write_to_csv(df)-> None:
+    """
+    Saves input df as final_dataset.csv in the
+    directory where the script runs
+    """
+
+    # Rename _id columns to make them conformant with the instructions
+    renamed = dict((col, col[:-3]) for col in df.columns if col.endswith('_id'))
+    df.rename(columns=renamed, inplace=True)
+
+    # Check that the output dataframe has exactly 32 columns
+    # The ones provided in the case
+    if len(df.columns)!=32:
+        raise ValueError('df does not have the right columns, check!')
+
+    # Write to csv
+    output_path = os.path.abspath(os.path.dirname(__file__))
+    output_file = f'{output_path}/final_dataset.csv'
+    df.to_csv(output_file, index=False)
 
 path = f"{os.path.abspath(os.path.dirname(__file__))}/customer_data.sqlite3"
 
@@ -463,62 +512,44 @@ df = merge_db_tables()
 print(f'Fixing wrong units')
 # Fix wrong quantities and assign proper format to columns
 df = fix_wrong_units(df, wanted_fields, fix_qties)
-# Looking at the distributions of NaNs, seems reasonable
-# to try to impute them
 print_nans_per_col(df)
 
 print('Creating quantiles for analysis')
 df = create_quantiles(df)
 
-def plt_scatter(df:pd.DataFrame, x:str, y:str, gpby:list[str]):
-    fig,ax = plt.subplots()
-    if gpby==[]:
-        ax.plot(df[x],df[y], linestyle='-', marker='o', label=key)
-    else:
-        for key,group in df.groupby(gpby):
-            ax.plot(group[x],group[y], linestyle='-', marker='o', label=key)
-    ax.set_xlabel(x)
-    ax.set_ylabel(y)
-    ax.legend(title=gpby)
-    ax.grid(True)
-    plt.title(f'{y} vs {x}')
-    plt.show()
-
-demographic_fact = ['age_qtile', 'annual_inc_qtile']
+demographic_fact = ['annual_inc_qtile']
 credit_usage_fact = ['revol_bal_qtile', 'open_acc_qtile', 'annual_inc_qtile']
-mort_fact = ['annual_inc_qtile']
-default_factors = ['pub_rec', 'pay_status']
+mort_fact = ['revol_bal_qtile', 'annual_inc_qtile']
+default_factors = ['pub_rec_qtile']
 
 predictors = {'emp_length':demographic_fact,
               'revol_util':credit_usage_fact,
               'mort_acc':mort_fact,
               'pub_rec_bankruptcies':default_factors}
 
+# Show relationship between annual_inc, age and emp_length
+show_relationship(df, 'emp_length', 'annual_inc_qtile', ['age_qtile', 'annual_inc_qtile'], ['age_qtile'])
+show_relationship(df, 'emp_length', 'age_qtile', ['age_qtile', 'annual_inc_qtile'], ['annual_inc_qtile'])
 
+# Print relationships of revol_util with revol_balance, open_acc and annual_income
+show_relationship(df, 'revol_util', 'revol_bal_qtile', ['revol_bal_qtile','open_acc_qtile'], ['open_acc_qtile'])
+show_relationship(df, 'revol_util', 'open_acc_qtile', ['revol_bal_qtile','open_acc_qtile'], ['revol_bal_qtile'])
+show_relationship(df, 'revol_util', 'annual_inc_qtile', ['annual_inc_qtile','open_acc_qtile'], ['open_acc_qtile'])
+
+# Print relationships of mortatge_accounts and income
+show_relationship(df, 'mort_acc', 'revol_bal_qtile', predictors['mort_acc'], ['annual_inc_qtile'])
+show_relationship(df, 'mort_acc', 'annual_inc_qtile', predictors['mort_acc'], ['revol_bal_qtile'])
+
+# Print relationship of pub_rec_bankruptcies and pub_rec
+show_relationship(df, 'pub_rec_bankruptcies', 'pub_rec_qtile', ['pub_rec_qtile'], [])
+
+print('Performing NaN imputation')
 # Perform NaN imputation
 df = perform_nan_imputation(df, predictors)
-
-# Remove the extra columns
-df = df.loc[:, df.columns.isin(wanted_fields.keys())]
-
-# After the NaN treatment, no NaNs should be present, assert it
-if df.isnull().sum().sum()!=0:
-    raise ValueError(f'DataFrame still contains Nans, check!')
 
 # Create the dummy variables
 df = create_dummies(df, 'verification_status')
 df = create_dummies(df, 'home_ownership')
 
-# Rename _id columns to make them conformant with the instructions
-renamed = dict((col, col[:-3]) for col in df.columns if col.endswith('_id'))
-df.rename(columns=renamed, inplace=True)
-
-# Check that the output dataframe has exactly 32 columns
-# The ones provided in the case
-if len(df.columns)!=32:
-    raise ValueError('df does not have the right columns, check!')
-
-# Write to csv
-output_path = os.path.abspath(os.path.dirname(__file__))
-output_file = f'{output_path}/final_dataset.csv'
-df.to_csv(output_file, index=False)
+write_to_csv(df)
+print('Program complete')
