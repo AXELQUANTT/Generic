@@ -186,7 +186,10 @@ class DDQN:
             if self.termination_policy and self.solve_metric(tot_ep_rewards) >= self.solve_target:
                 print(f'Success, agent has solved the environment')
                 break
-
+        
+        tot_ep_rewards = np.array(tot_ep_rewards)
+        tot_ep_losses = np.array(tot_ep_losses)
+        
         return tot_ep_rewards, tot_ep_losses, history
 
     def _compute_input(self, states: np.array, actions: np.array = np.array([]), action_flag : np.array = np.array([])) -> np.array:
@@ -247,10 +250,10 @@ class DDQN:
         if self.action_as_in:
             # Exercise => rewrite this so that action is taken as input
             # Consider that Y needs to be a self.batch x 1d array
-            x_states = tf.convert_to_tensor(self._compute_input(states,action_flag=actions))
+            x_states = tf.convert_to_tensor(self._compute_input(states, action_flag=actions))
             x_next_states = tf.convert_to_tensor(self._compute_input(next_states))
 
-            # Perfom some check
+            # Perfom some checks
             if sum(x_states.numpy()[:,-1]==1)!=self.replay_mini_batch:
                 raise ValueError(f'Check x_states computation, number of selections actions does not match!!')
 
@@ -355,11 +358,10 @@ class DDQN_tradexecution(DDQN):
                         # not the algorithm figure out that selling a lot of shares on an early
                         # point is not the best. Seems to me this is a way to reduce the exploration
                         # phase substantially => try with letting the algo pick any qt available
-                        if self.unif:
-                            action = np.random.randint(low=self.env.action_space.start,high=self.env.action_space.n)
-                            return action
-                        
                         qt, t = state
+                        if self.unif:
+                            action = np.random.randint(low=self.env.action_space.start, high=qt+1)
+                            return action
                         return binom(qt, self.env.dt/t).rvs()
                                 
 
