@@ -349,6 +349,7 @@ class DDQN_tradexecution(DDQN):
                 so we only consider exploitation regime.
             """
             
+            qt, t = state
             match pretrain_mod:
                 case '':
                     if train and np.random.rand() <= self.greedy:
@@ -358,7 +359,6 @@ class DDQN_tradexecution(DDQN):
                         # not the algorithm figure out that selling a lot of shares on an early
                         # point is not the best. Seems to me this is a way to reduce the exploration
                         # phase substantially => try with letting the algo pick any qt available
-                        qt, t = state
                         if self.unif:
                             action = np.random.randint(low=self.env.action_space.start, high=qt+1)
                             return action
