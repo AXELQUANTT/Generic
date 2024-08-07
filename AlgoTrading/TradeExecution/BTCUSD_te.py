@@ -1,34 +1,28 @@
-#import glob
-#import gymnasium as gym
-import matplotlib.pyplot as plt
-#import numpy as np
-import os
-#import pandas as pd
-#import seaborn as sns
+import pandas as pd
 import sys
-sys.path.insert(1,'/home/axelbm23/Code/ML_AI/Algos/ReinforcementLearning/')
-from agents import DDQN_tradexecution, TWAP, RANDOM_TE
-import time
-import tensorflow as tf
-#import tf_keras
-from typing import Any,Optional
-from BTCUSD_te_utils import create_data_and_env, action_masking, format_logs, compute_perf
+from BTCUSD_te_utils import create_data_and_env, action_masking 
+from BTCUSD_te_utils import compute_perf, create_sett, select_agent
+sys.path.insert(1,'/home/axelbm23/Code/Library/')
+from plotting import sns_lineplot
 
 # Set up the default values
 N_ITERATIONS = 3
 GAMMA = 0.99
 GREEDY_STEP = 999e-3
-EPISODES = 50 # 10_000 in DDQN paper
+GREEDY_UNIF = True
+EPISODES = 10 # 10_000 in DDQN paper
 BUFF_SIZE = 1_000 # 5_000 in DDQN paper
 BATCH_SIZE = 64 # 32 in DDQN paper
 NN_COPY_CADENCY = None # 15 in DDQN paper
 SOFT_UPDATE = 0.005
-NEURONS = [128]*2
+NEURONS = [20]*6 # 20 nodes, 6 layers in DDQN paper
 ACT_AS_IN = True
 ADD_LOGS = True
 LOSS_FUNC = 'mean_squared_error'
 ADAM_LR = 0.001
-OUTPUT_PATH = f'{os.getcwd()}/results/rewards_losses'
+SOLV_METR = None
+SOLV_TAR = -1
+PRETRAIN = False
 
 # Load BTC_USD perpetual data and create the environment
 path = "/home/axelbm23/Code/AlgoTrading/data/BTCUSD_PERP*.csv"
@@ -41,56 +35,43 @@ env_sett = {'t': 30,  # time left to close our position, in seconds
 
 data, env = create_data_and_env(path, env_sett)
 
-def_nn_arch = {'neurons': NEURONS,
-               'action_as_input':ACT_AS_IN,
-                'loss_function': LOSS_FUNC,
-                'optimizer': tf.keras.optimizers.Adam(learning_rate=ADAM_LR),
-                }
+results = {}
+stats = {}
+logs = {}
+for iter in range(N_ITERATIONS):
+    for agent_label in ['twap', 'ddqn', 'ddqn_pre', 'random']:
+        settings = create_sett(nn_arch=NEURONS, act_in=ACT_AS_IN, loss_func=LOSS_FUNC, 
+                               opt_lr=ADAM_LR, gamma=GAMMA, gr_step=GREEDY_STEP,
+                               greed_unif=GREEDY_UNIF, env=env, episodes=EPISODES,
+                               buff_size=BUFF_SIZE, batch_size=BATCH_SIZE,
+                               nn_cpy_cad=NN_COPY_CADENCY, soft_update=SOFT_UPDATE,
+                               logs=ADD_LOGS, solv_metric=SOLV_METR, solv_tar=SOLV_TAR,
+                               pretr=PRETRAIN, max_poss_act=action_masking)
+        
+        settings['pretrain'] = agent_label=='ddqn_pre'
+        agent = select_agent(agent_label)(sett=settings)
+        agent.env.reset(0)
+        if agent_label.startswith('ddqn'):
+            rew, loss, lgs, _, _ = agent.train()
+        else:
+            rew, loss, lgs = agent.train()
+        
+        # Store output
+        results[(agent_label, 'rew', iter)] = rew
+        results[(agent_label, 'loss', iter)] = loss
+        logs[(agent_label, iter)] = lgs
 
-def_agent = {'gamma': GAMMA,
-            'greedy_step': GREEDY_STEP,
-            'greedy_uniform':True,
-            'environment': env,
-            'episodes': EPISODES,
-            'buff_size': BUFF_SIZE, 
-            'replay_mini_batch': BATCH_SIZE,
-            'nn_copy_cadency': NN_COPY_CADENCY,
-            'nn_architecture': def_nn_arch,
-            'soft_update': SOFT_UPDATE,
-            'add_logs':ADD_LOGS,
-            'solve_metric':None,
-            'solve_target':-1,
-            'pretrain':False,
-            'max_poss_action':action_masking}
+        # Compute stats
+        if agent_label != 'twap':
+            stats[(agent_label, iter)] = compute_perf(rew, results[('twap', 'rew', iter)])
 
-# Train our DDQN agent
-ddqn_agent_no_pretrain = DDQN_tradexecution(sett=def_agent)
-ddqn_rewards, ddqn_losses, ddqn_logs, _, _ = ddqn_agent_no_pretrain.train()
-#ddqn_df = format_logs(ddqn_logs)
+# Format output objects
+stats_df = pd.DataFrame.from_dict(stats, orient='index').reset_index()
+stats_df.rename(columns={'level_0':'agent','level_1':'iteration'}, inplace=True)
 
-# Train TWAP agent
-twap_agent = TWAP(sett=def_agent)
-# Make sure that environmnet is at the beginning again
-twap_agent.env.reset(0)
-twap_rewards, twap_losses, twap_logs = twap_agent.train()
-
-# RANDOM agent
-random_agent = RANDOM_TE(sett=def_agent)
-# Make sure that environmnet is at the beginning again
-random_agent.env.reset(0)
-random_rewards, random_losses, random_logs = random_agent.train()
-
-# DDQN agent, pre-training it this time
-def_agent['pretrain'] = True
-ddqn_pre_trained = DDQN_tradexecution(sett=def_agent)
-random_agent.env.reset(0)
-ddqn_pre_rewards, ddqn_pre_losses, ddqn_pre_logs, start, end = ddqn_agent_no_pretrain.train()
-
-# Compute performance metrics over the multiple agents trained
-ddqn_nopre_perf = compute_perf(ddqn_rewards, twap_rewards)
-ddqn_pre_perf = compute_perf(ddqn_pre_rewards, twap_rewards)
-rand_perf = compute_perf(random_rewards, twap_rewards)
-
-# OBS_1: How come ddqn_pre always sells all shares at the beginning
-# of the interval? This is caused by the binomial distribution we are
-# using for the e-greedy approach. Use a uniform distribution instead
+# Set a multindex dataframe to store the results
+results_df = pd.DataFrame.from_dict(results, orient='index').reset_index()
+results_df[['agent','metric', 'iteration']] = results_df['index'].tolist()
+results_df.drop(['index'], inplace=True, axis=1)
+results_df.set_index(['agent','metric','iteration'], inplace=True)
+results_df = results_df.T
