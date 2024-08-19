@@ -10,7 +10,7 @@ import sys
 sys.path.insert(1,"/home/axelbm23/Code/ML_AI/Algos/Miscellaneous/")
 from misc_utils import create_nn
 import tensorflow as tf
-
+import pickle
 
 class ExpirienceReplay:
     def __init__(self, maxlen: int, mini_batch: int):
@@ -81,7 +81,8 @@ class DDQN:
         self.solve_metric = sett['solve_metric']
         self.solve_target = sett['solve_target']
         self.termination_policy = self.solve_metric != None
-        self.max_action = sett['max_poss_action']# action masking feature
+        self.max_action = sett['max_poss_action']
+        self.man_grad = sett['man_gradient']
 
     def _soft_update_policy(self, ep:int) -> None:
         """
@@ -142,8 +143,26 @@ class DDQN:
             return 0
         
         x, y = self._compute_regressors_targets()
-        history = self.policy_nn.fit(x=x, y=y, verbose=0, epochs=1)
-        return history.history['loss'][0]
+        
+        if self.man_grad:
+            with tf.GradientTape() as tape:
+                y_pred = self.policy_nn(x, training=True)
+                # Compared loss with tf.keras.losses.MeanSquaredError() and outputs the same
+                # So discrepancy has to be on another side
+                loss = self.policy_nn.compute_loss(y=y, y_pred=y_pred)
+            
+            
+            trainable_vars = self.policy_nn.trainable_variables
+            gradients = tape.gradient(loss, trainable_vars)
+            iters = self.policy_nn.optimizer.apply_gradients(zip(gradients, trainable_vars))
+        else:
+            history = self.policy_nn.fit(x=x, y=y, verbose=0, epochs=1, batch_size=self.replay_mini_batch)
+            loss = history.history['loss'][0]
+
+        # Compute the gradient of my loss function wrt model weights
+        # Basically to ensure that there is no gradient explosion
+        
+        return loss
 
     def train(self) -> list[float]:
         """
@@ -181,7 +200,8 @@ class DDQN:
             if self.add_log:
                 print(f'episode {ep}/{self.episodes-1}, greedy_param={round(self.greedy,5)}'\
                     f' reward={ep_reward}, avg_rew={round(avg,3)},'
-                    f' avg_rew(100)={round(last_hundred_avg,3)}')
+                    f' avg_rew(100)={round(last_hundred_avg,3)},'
+                    f' loss={loss}')
             
             if self.termination_policy and self.solve_metric(tot_ep_rewards) >= self.solve_target:
                 print(f'Success, agent has solved the environment')
@@ -258,8 +278,14 @@ class DDQN:
                 raise ValueError(f'Check x_states computation, number of selections actions does not match!!')
 
             target = self._construct_np_arr(x_states, self.policy_nn(x_states[:,1:-1]))
-            target_next_states = self._construct_np_arr(x_next_states, self.policy_nn(x_next_states[:,1:]))
+            predicted_states = self.policy_nn(x_next_states[:,1:])
 
+            # All the Nans come from the fact that policy_nn predicts all nans, this seems a policy gradient explosion
+            # For instance, I am seeing values of 6.50742775939072e+16 for the loss function
+            if any(np.isnan(predicted_states)):
+                print(f'target_next_states has Nans, check!!')
+            target_next_states = self._construct_np_arr(x_next_states, predicted_states)
+            
             # One corner case here is what happens if the policy_nn network produces the exact same q_value
             # for two diferent actions. In those cases it's indiferent which action to take, so we take
             # the first one (arbitrary, but by definition should not have any impact). Also,
@@ -327,6 +353,42 @@ class DDQN:
         best_action = np.argmax(predictions)
         return best_action
     
+    def save(self, path:str, id:str) -> None:
+        """
+        Saves current state of the agent in path folder with the name id.
+        """
+
+        # Generate unique 6 character identifier for this agent
+        pol_nn_id = f'{id}_policy.keras'
+        tgt_nn_id = f'{id}_target.keras'
+        sett_id = f'{id}_sett.pkl'
+
+        self.policy_nn.save(f'{path}/{pol_nn_id}')
+        self.target_nn.save(f'{path}/{tgt_nn_id}')
+        
+        # Save rest of settings into a pkl object
+        sett = dict((key,value) for key,value in self.__dict__ .items() if key not in (['policy_nn','target_nn']))
+        with open(f'{path}/{sett_id}', 'wb') as f:
+            pickle.dump(sett, f, protocol=pickle.HIGHEST_PROTOCOL)
+        f.close()
+        pass
+    
+    def load(self, path:str, id:str):
+        """
+        Loads models and all paramteres related to the agent in path with
+        identifier id
+        """
+        
+        file = open(f'{path}/{id}_sett.pkl', 'rb') 
+        for key,value in pickle.load(file).items():
+            self.key = value
+
+        self.policy_nn = tf.keras.models.load_model(f'{path}/{id}_policy.keras')
+        self.target_nn = tf.keras.models.load_model(f'{path}/{id}_target.keras')
+        
+        return self
+
+
 
 class DDQN_tradexecution(DDQN):
         def __init__(self,sett):
@@ -376,10 +438,12 @@ class DDQN_tradexecution(DDQN):
                         predictions = self.policy_nn(tf.convert_to_tensor(state.reshape(1,len(state))))
                     best_action = np.argmax(predictions)
                     return best_action
+                
                 case 'start':
                     if t == self.env.T:
                         return self.env.q0
                     return 0
+                
                 case 'end':
                     if t == self.env.dt:
                         return self.env.q0
