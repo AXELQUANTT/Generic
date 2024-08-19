@@ -106,7 +106,3 @@ for iter in range(N_ITERATIONS):
 
 # Goal_2: ddqn_2 should behave worse than ddqn around the
 # beginning of the training
-
-# TO-DO: At the moment the episodes can be of different lengths. I have
-# changed the logic in the environment so that all episodes have the same
-# length.

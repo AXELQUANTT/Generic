@@ -182,10 +182,10 @@ class DDQN:
             loss = 0
             while not done:
                 action = self.choose_action(state=s)
-                s_prime, reward, done, _, _ = self.env.step(action)
+                s_prime, reward, done, _, info = self.env.step(action)
                 self.replay_buffer.push(s, action, reward, s_prime, done)
                 if self.add_log:
-                    history.append([s, action, reward, s_prime])
+                    history.append([s, action, reward, s_prime, info['timestamp']])
                 self._soft_update_policy(ep)
                 ep_reward += reward
                 loss += self._agent_update()
@@ -486,7 +486,7 @@ class DDQN_tradexecution(DDQN):
                         # After we have created a new data_point, update our networks in case
                         # it's needed
                         loss += self._agent_update()
-                        history.append([s, action, reward, s_prime, self.env.data_idx])
+                        history.append([s, action, reward, s_prime, info['timestamp']])
                         # Update target (if needed)
                         self._soft_update_policy(pre_ep)
 

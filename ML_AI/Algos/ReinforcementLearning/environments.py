@@ -1,3 +1,4 @@
+import datetime
 import gymnasium as gym
 from gymnasium.core import RenderFrame
 from gymnasium import spaces
@@ -94,8 +95,9 @@ class TradeExecution(gym.Env):
                                  f' index={id}')
             self.data_idx = id
 
-        info = {'Inventory': self.qt,
-                'Time_to_execute': self.t}
+        info = {'inventory': self.qt,
+                'time_to_execute': self.t,
+                'timestamp':self._get_ts(self.data_idx)}
 
         return self.extract_state(), info
 
@@ -110,11 +112,11 @@ class TradeExecution(gym.Env):
             return self.qt
         return action
 
-    def _get_mid_price(self, idx: int) -> float:
-        return self.data.loc[idx, 'mp']
-
     def _get_mp_diff(self, idx: int) -> float:
         return self.data.loc[idx, 'mp_diff']
+    
+    def _get_ts(self, idx: int) -> datetime.datetime:
+        return self.data.loc[idx, 'datetime(s)']
 
     def step(self, action: Any) -> tuple[Any, SupportsFloat, bool, bool, dict[str, Any]]:
 
@@ -151,8 +153,9 @@ class TradeExecution(gym.Env):
         self.t -= self.dt
 
         # Distribute some printing information
-        info = {'Inventory': self.qt,
-                'Time_to_execute': self.t}
+        info = {'inventory': self.qt,
+                'time_to_execute': self.t,
+                'timestamp':self._get_ts(self.data_idx)}
 
         if self.t == 0:
             # If we get to the last step, add big penalty for all the remaining
