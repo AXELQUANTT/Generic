@@ -527,10 +527,12 @@ class TWAP(DDQN):
     def _agent_update(self) -> int:
         return 0
     
+    # TO-DO: Substitute this with optional arguments
     def _soft_update_policy(self, ep:int) -> None:
         pass
 
-    def choose_action(self, state):
+    
+    def choose_action(self, state: np.array, train: bool = True):
         return int(self.env.q0/self.env.N)
     
 class RANDOM_TE(TWAP):
@@ -540,8 +542,9 @@ class RANDOM_TE(TWAP):
     """
     def __init__(self,sett):
         super(RANDOM_TE, self).__init__(sett)
-
-    def choose_action(self, state):
+    
+    # TO-DO: Substitute this with optional arguments
+    def choose_action(self, state: np.array, train: bool = True):
         return np.random.randint(0, state[0]+1)
 
 class Agent_Performance():
