@@ -42,7 +42,7 @@ class PairTrading(bt.Strategy):
 
     def __init__(self):
         # Initialize our signal
-        self.signal = np.log(self.datas[0].close/self.datas[1].close) - 
+        self.signal = np.log(self.datas[0].close/self.datas[1].close)
 
     def next(self):
         # Next function defines the logic of what to do
