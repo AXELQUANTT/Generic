@@ -154,12 +154,7 @@ class TradeExecution(gym.Env):
         info = {'Inventory': self.qt,
                 'Time_to_execute': self.t}
 
-        # If our inventory gets to 0 or we don't have more time to unfold our position,
-        # we consider the episode to be finished
-        if self.qt == 0:
-            self.done = True
-
-        elif self.t == 0:
+        if self.t == 0:
             # If we get to the last step, add big penalty for all the remaining
             # shares that we have in a dt interval
             reward += self.qt * \
