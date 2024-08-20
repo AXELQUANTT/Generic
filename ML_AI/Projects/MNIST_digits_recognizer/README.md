@@ -18,6 +18,9 @@ with detailed explanation of the steps carried out in the training/testing
 phases. Please refer to that file for further explanation.
 
 ## Installation and Setup
+By downloading Analysis.ipnyb and Utils.py one can replicate the results posted in this folder.
+
+### Packages
 - Python 3.10.12
 - Pandas 2.1.0
 - Numpy 1.26.4
@@ -35,6 +38,9 @@ https://www.kaggle.com/datasets/oddrationale/mnist-in-csv
 This project is made of two main packages:
 - Analysis.ipynb => Ipython notebook containing the main part of the project.
 - Utils.py => Auxiliary package containing functions called by Analysis.ipynb.
+
+Analysis.ipynb contains markdown cells explaining in detail the steps taken. All functions within Utils.py
+also contain small comments regarding their function.
 
 ## License
 Source code is licensed under the MIT license.
