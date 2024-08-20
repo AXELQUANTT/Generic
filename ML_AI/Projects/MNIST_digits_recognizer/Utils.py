@@ -56,13 +56,8 @@ def build_model_and_train(model_params, x_train, y_train, x_crossval, y_crossval
     # Configure the network => specify loss functiona and optimizer
     model.compile(loss=SparseCategoricalCrossentropy(from_logits=True),
                     optimizer=Adam(learning_rate=0.001))
-    
-    # Finally train the model (perform backpropagation)
-    # epoch specifies the iterations of the adam optimizer
-    history = model.fit(x_t,y_t, epochs=n_epoch,verbose=0)
 
-    #print(model.layers)
-    #print(f"model summary = {model.summary()}")
+    history = model.fit(x_t,y_t, epochs=n_epoch, verbose=0, shuffle=False, batch_size=len(x_t))
 
     # Now given an input, X, make predictions with our trained model
     # Softmax will return, for each row in x_t, a 1-D array of len=10
