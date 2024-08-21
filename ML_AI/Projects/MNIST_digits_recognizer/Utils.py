@@ -1,5 +1,4 @@
-# Repository for all the functions/methods used in our jupiter notebook
-import pandas as pd
+#import pandas as pd
 import numpy as np
 import tensorflow as tf
 from tensorflow import keras
@@ -12,7 +11,7 @@ from keras.optimizers import Adam
 from scipy.ndimage import rotate
 from collections import Counter
 
-def compute_J(yhat,y) -> float:
+def compute_J(yhat, y) -> float:
     if len(yhat)!=len(y):
         raise Warning(f"len(yhat)={len(yhat)}  and len(y)={len(y)} do not have the same size!")
      
@@ -27,7 +26,7 @@ def compute_J(yhat,y) -> float:
     return abs_error, error_analysis
 
 # This function will return three outputs, the model itself and the costs in the train and cross validation datasets
-def build_model_and_train(model_params, x_train, y_train, x_crossval, y_crossval, categories, n_epoch):
+def build_model_and_train(model_params, x_train, y_train, x_crossval, y_crossval, categories, n_epoch, batch_size):
     # This function is devoted to build and train a NN
     # and compute the Cost of its predictions on the train and
     # cross validation datasets
@@ -57,13 +56,13 @@ def build_model_and_train(model_params, x_train, y_train, x_crossval, y_crossval
     model.compile(loss=SparseCategoricalCrossentropy(from_logits=True),
                     optimizer=Adam(learning_rate=0.001))
 
-    history = model.fit(x_t,y_t, epochs=n_epoch, verbose=0, shuffle=False, batch_size=len(x_t))
+    history = model.fit(x_t, y_t, epochs=n_epoch, verbose=0, batch_size=batch_size)
 
     # Now given an input, X, make predictions with our trained model
     # Softmax will return, for each row in x_t, a 1-D array of len=10
     # containing the probabilities of each number
-    yhat_train = np.argmax(tf.nn.softmax(model.predict(x_t)), axis=1)
-    yhat_cv = np.argmax(tf.nn.softmax(model.predict(x_cv)), axis=1)
+    yhat_train = np.argmax(tf.nn.softmax(model.predict(x_t, verbose=0)), axis=1)
+    yhat_cv = np.argmax(tf.nn.softmax(model.predict(x_cv, verbose=0)), axis=1)
     
     j_train, error_train = compute_J(yhat_train,y_t)
     j_cv, error_cv = compute_J(yhat_cv,y_cv)
