@@ -37,10 +37,11 @@ class TradeExecution(gym.Env):
     # def render()      =>  this function renders the data into a visual form, which
     #                       we will not use here.
     # def step()        =>  core part of the environemt. This is where we implement what
-    #                       happens when the agent 'acts' on the environment. The
+    #                       happens when the agent takes an action on the environment. The
     #                       step function returns a tuple of four variables
     #                       (observation, reward, done, info).
 
+    # TO-DO: Write documentation about what structure the data needs to follow.
     def __init__(self,
                  data: pd.DataFrame,
                  T: float,  # Time to close our position, in seconds

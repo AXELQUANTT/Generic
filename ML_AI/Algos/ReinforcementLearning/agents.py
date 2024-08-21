@@ -1,9 +1,6 @@
 from collections import deque
-import gymnasium as gym
 from itertools import groupby
-import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
 import random
 from scipy.stats import binom
 import sys
@@ -13,13 +10,19 @@ import tensorflow as tf
 import pickle
 
 class ExpirienceReplay:
+    """
+    Deque object parametrized by two settings: The max length
+    of the dequeu (maxlen) and the length of the elements
+    that are retrieved when user pushes data (mini_batch).
+    This object is developed with the aim to be used as a Replay
+    Buffer for Reinforcement Learning agents.
+    """
+
     def __init__(self, maxlen: int, mini_batch: int):
         self._buffer = deque(maxlen=maxlen)
         self.mini_batch = mini_batch
 
-    # , p_init, p_last_step):
     def push(self, state, action, reward, next_state, terminated):
-        # Make sure that state and next_state are 2d arrays
         if state.ndim==1:
             state = state.reshape(1,len(state))
             next_state = next_state.reshape(1,len(next_state))
@@ -33,7 +36,6 @@ class ExpirienceReplay:
     def get_arrays_from_batch(self):
         batch = self._get_batch()
 
-        # Check the dimensionality of the states
         states = np.array([x[0] for x in batch])[:, 0, :]
         actions = np.array([x[1] for x in batch])
         rewards = np.array([x[2] for x in batch])
@@ -48,7 +50,7 @@ class ExpirienceReplay:
 
 class DDQN:
     """
-    This file devoted to implement a DQN (deep Q neuronal network)
+    Object implementing a DDQN (double deep Q neuronal network)
     algorithm to be used as agent in any RL environment
     """
 
@@ -66,10 +68,12 @@ class DDQN:
             maxlen=self.buff_size, mini_batch=self.replay_mini_batch)
         self.batch_index = np.arange(self.replay_mini_batch)
         self.action_as_in = sett['nn_architecture']['action_as_input']
-        self.policy_nn = create_nn(input_size=self.env.observation_space.shape[0]+1 if self.action_as_in else self.env.observation_space.shape[0],
+        self.policy_nn = create_nn(input_size=self.env.observation_space.shape[0]+1 if self.action_as_in 
+                                   else self.env.observation_space.shape[0],
                                     model_params=sett['nn_architecture'],
                                     output_size=1 if self.action_as_in else self.env.action_space.n)
-        self.target_nn = create_nn(input_size=self.env.observation_space.shape[0]+1 if self.action_as_in else self.env.observation_space.shape[0],
+        self.target_nn = create_nn(input_size=self.env.observation_space.shape[0]+1 if self.action_as_in 
+                                   else self.env.observation_space.shape[0],
                                     model_params=sett['nn_architecture'],
                                     output_size=1 if self.action_as_in else self.env.action_space.n)
         
@@ -86,8 +90,9 @@ class DDQN:
 
     def _soft_update_policy(self, ep:int) -> None:
         """
-        Function that specifies how the the params of the policy network need
-        to be transfered to the target network.
+        Function that specifies the policy used to copy
+        the weights of the policy network to the target
+        network.
         """
 
         old_weights = self.target_nn.get_weights()
@@ -388,9 +393,11 @@ class DDQN:
         
         return self
 
-
-
 class DDQN_tradexecution(DDQN):
+        """
+        Child class of DDQN with custom logic to select actions and pretrain
+        the model. Both custom functions affect the training of the agent.
+        """
         def __init__(self,sett):
             super(DDQN_tradexecution, self).__init__(sett)
             self.unif = sett['greedy_uniform']
@@ -505,14 +512,15 @@ class DDQN_tradexecution(DDQN):
             return None,None
         
         def train(self):
+            # If we pre-train we are actually using episodes+pre_train episodes
+            # to train the model, so more data than if we don not pre-train it
             pol_start, pol_end = self._pretrain()
+            
             # Since we have modified the choose_action to our new needs,
             # we can just call the parent class with train
             tot_ep_rewards, tot_ep_losses, history = super(DDQN_tradexecution, self).train()
             return tot_ep_rewards, tot_ep_losses, history, pol_start, pol_end
         
-# The following two classes only work with 
-# the TradeExecution environment we have created
 class TWAP(DDQN):
     """
     Very simple agent that does not learn anything, just
