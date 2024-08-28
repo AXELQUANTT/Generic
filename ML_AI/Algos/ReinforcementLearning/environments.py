@@ -8,7 +8,6 @@ from typing import Any
 from typing import SupportsFloat
 
 class TradeExecution(gym.Env):
-    # FOR NOW:
     # Assumptions
     # 1. Given the size of the position in terms of the overall volume
     #   quoted at each level, we consider that the trader actions DO NOT
@@ -19,37 +18,27 @@ class TradeExecution(gym.Env):
     #   time index in which we are, t, and the remaining inventory q(t)
     #   to execute.
     #   t=0 at the beginning, t=T at the end.
-    #   q(t=0) = q0 and q(t=T)= 0
     #   On a given time t, then the range of possible actions is restricted by
     #   (0, q(t)), which is discrete.
     # 4. We assume the agent makes decisions every T/N and that trades are executed
     #   on the subintervals of M_k.
 
     # For now we will only consider the current inventory and the time left for execution
-    # as our state variables
+    # as our state variables, but other variables could be used to train the agent, such
+    # as expected price volatility.
 
-    # The api we need to focus on the gym.Env class are the following:
-    # def __init__()    => defines the initializations needed for the environment
-    # def reset()       =>  this function resets the environment to its starting state
-    #                       whenever the environment reaches a terminal state
-    #                       or a state which is invalid. It needs to return the
-    #                       state variable
-    # def render()      =>  this function renders the data into a visual form, which
-    #                       we will not use here.
-    # def step()        =>  core part of the environemt. This is where we implement what
-    #                       happens when the agent takes an action on the environment. The
-    #                       step function returns a tuple of four variables
-    #                       (observation, reward, done, info).
-
-    # TO-DO: Write documentation about what structure the data needs to follow.
     def __init__(self,
                  data: pd.DataFrame,
                  T: float,  # Time to close our position, in seconds
                  q0: int,  # Starting position
                  N: int,  # Number of steps over which the action can take a decision
                  alpha: float = 0.01,  # slippage factor
-                 granularity: int = 0.25):
-
+                 granularity: int = 0.25): # number of seconds between two price updates
+        
+        # Data is assumed to be a pandas Dataframe containing two columns:
+        # mp_diff => difference between twc consecutive mid_price updates
+        # datetime(s) => datetime in seconds of the last datetime of the
+        # interval.
         self.data = data
         self.T = T
         self.q0 = q0
@@ -64,8 +53,8 @@ class TradeExecution(gym.Env):
         self.t = self.T
 
         # This is the variable that controls whether we have reached a
-        # terminal state, which can be triggered in one of the two
-        # scenarios
+        # terminal state, which happens when the remaining time to
+        # unfold our position reaches 0.
         self.done = False
 
         # This is where we define what possible actions can the agent take
@@ -176,19 +165,6 @@ class TradeExecution(gym.Env):
     
 
 class PortfolioOptimization(gym.Env):
-    # The api we need to focus on the gym.Env class are the following:
-    # def __init__()    => defines the initializations needed for the environment
-    # def reset()       =>  this function resets the environment to its starting state
-    #                       whenever the environment reaches a terminal state
-    #                       or a state which is invalid. It needs to return the
-    #                       state variable
-    # def render()      =>  this function renders the data into a visual form, which
-    #                       we will not use here.
-    # def step()        =>  core part of the environemt. This is where we implement what
-    #                       happens when the agent 'acts' on the environment. The
-    #                       step function returns a tuple of four variables
-    #                       (observation, reward, done, info).
-
     def __init__(self, data: pd.DataFrame, trans_costs: float, slipp: float,
                  trade_size: int, initial_balance: float, long_only: bool):
         self.data = data
