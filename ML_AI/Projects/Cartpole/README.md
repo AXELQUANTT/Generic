@@ -14,11 +14,18 @@ This project has two main goals:
     - Parameters effect: Among some of the parameters that affect the learning process to
     a greater extent we have:
                              - Network architecture: Number of layers of the neuronal networks
-                               and number of neurons per layer. One of the parameters that was also tested was to use the action as input of the network, ACT_AS_IN which is just an implementation detail and had no major effect.
+                               and number of neurons per layer. One of the parameters that was 
+                               also tested was to use the action as input of the network,
+                               ACT_AS_IN which is just an implementation detail and had no major 
+                               effect.
                              - Learning rate: Size of the step used in Adam optimizer.
                              - Type of target network update: We differentiate between
-                             hard copy (i.e weights of policy network copied to the target network every x episodes) or soft copy (i.e weights of target policy are a weighted average of current policy network weights and the previous target network weights)
-                             - Greedy step: Greedy factor is reduced by this amount on every step. This controls how big the exploration phase is.
+                             hard copy (i.e weights of policy network copied to the target
+                             network every x episodes) or soft copy (i.e weights of target
+                             policy are a weighted average of current policy network weights
+                             and the previous target network weights)
+                             - Greedy step: Greedy factor is reduced by this amount on every
+                             step. This controls how big the exploration phase is.
     
 
 ## Installation and Setup
@@ -58,14 +65,19 @@ which is explained in detail below:
 parameters that parametrize the DDQN agent. For a detailed
 explanation of these, please go to 
 https://github.com/AXELQUANTT/Generic/blob/main/ML_AI/Algos/ReinforcementLearning/agents.py
-Once a set of default of settings are defined, some variations of them are defined and the learning process for each one of them is launched. The two main outputs 
-of the learning process are the reward curves (i.e aggregate reward per episode) and the
-losses curves (i.e aggregate loss per episode). The last part of the project computes
-set of statistics on top of these curves to asses the quality of the learnt policy.
-Since Reinforcement Learning algorithms exhibit a high degree of dependency on the
-initial conditions, multiple trials with the same parameters are performed to obtain more statistically robust conclusions. One thing to note is that the learning process
-is finished once all the episodes are concluded or when a default reward of 195
-is obtained in the last 100 episodes of training.
+Once a set of default of settings are defined, some variations 
+of them are defined and the learning process for each one of them
+is launched. The two main outputs of the learning process are the 
+reward curves (i.e aggregate reward per episode) and the
+losses curves (i.e aggregate loss per episode). The last part of
+the project computes set of statistics on top of these curves to
+asses the quality of the learnt policy. Since Reinforcement Learning
+algorithms exhibit a high degree of dependency on the initial conditions,
+multiple trials with the same parameters are performed to obtain
+more statistically robust conclusions. One thing to note is that the
+learning process is finished once all the episodes are concluded
+or when a default reward of 195 is obtained in the last 100 episodes
+of training.
 
 ## Results
 The results are widely discussed in the markdown cells of the notebook, but just
