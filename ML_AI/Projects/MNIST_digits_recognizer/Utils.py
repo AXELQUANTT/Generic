@@ -23,7 +23,9 @@ def compute_J(yhat, y) -> float:
     abs_error = (1/len(yhat))*n_errors
     error_analysis = dict((key,value/n_errors) for key,value in Counter(y[y!=yhat]).items())
 
-    return abs_error, error_analysis
+    acc = sum(yhat==y)/len(y)
+
+    return abs_error, error_analysis, acc
 
 # This function will return three outputs, the model itself and the costs in the train and cross validation datasets
 def build_model_and_train(model_params, x_train, y_train, x_crossval, y_crossval, categories, n_epoch, batch_size):
@@ -64,10 +66,14 @@ def build_model_and_train(model_params, x_train, y_train, x_crossval, y_crossval
     yhat_train = np.argmax(tf.nn.softmax(model.predict(x_t, verbose=0)), axis=1)
     yhat_cv = np.argmax(tf.nn.softmax(model.predict(x_cv, verbose=0)), axis=1)
     
-    j_train, error_train = compute_J(yhat_train,y_t)
-    j_cv, error_cv = compute_J(yhat_cv,y_cv)
+    j_train, error_train, acc_train = compute_J(yhat_train,y_t)
+    j_cv, error_cv, acc_cv = compute_J(yhat_cv,y_cv)
 
-    return model, j_train, j_cv, history, error_train, error_cv
+    # Compute F1 score, which is actually the statistic that will
+    # be used to rank our proposal
+    
+
+    return model, j_train, j_cv, history, error_train, error_cv, acc_train, acc_cv
 
 def plot_adam_cost(costs):
      fig,ax = plt.subplots()
