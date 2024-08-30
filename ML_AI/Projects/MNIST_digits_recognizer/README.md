@@ -39,8 +39,10 @@ This project is made of two main packages:
 - Analysis.ipynb => Ipython notebook containing the main part of the project.
 - Utils.py => Auxiliary package containing functions called by Analysis.ipynb.
 
-Analysis.ipynb contains markdown cells explaining in detail the steps taken. All functions within Utils.py
-also contain small comments regarding their function.
+Analysis.ipynb contains markdown cells explaining in detail the steps taken,
+with a brief summary of the steps taken in the first markdown cells. 
+All functions within Utils.py also contain small comments regarding their
+function.
 
 ## License
 Source code is licensed under the MIT license.
