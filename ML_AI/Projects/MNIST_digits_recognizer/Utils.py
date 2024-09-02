@@ -38,9 +38,6 @@ def build_model_and_train(model_params, x_train, y_train, x_crossval, y_crossval
     
     # Make sure the input passed to keras is correct
     x_t = np.array(x_train)
-    y_t = np.array(y_train)
-    x_cv = np.array(x_crossval)
-    y_cv = np.array(y_crossval)
 
     # Build the architecture
     tf.random.set_seed(1234)
@@ -58,20 +55,35 @@ def build_model_and_train(model_params, x_train, y_train, x_crossval, y_crossval
     model.compile(loss=SparseCategoricalCrossentropy(from_logits=True),
                     optimizer=Adam(learning_rate=0.001))
 
-    history = model.fit(x_t, y_t, epochs=n_epoch, verbose=0, batch_size=batch_size)
-
-    # Now given an input, X, make predictions with our trained model
-    # Softmax will return, for each row in x_t, a 1-D array of len=10
-    # containing the probabilities of each number
-    yhat_train = np.argmax(tf.nn.softmax(model.predict(x_t, verbose=0)), axis=1)
-    yhat_cv = np.argmax(tf.nn.softmax(model.predict(x_cv, verbose=0)), axis=1)
-    
-    j_train, error_train, acc_train = compute_J(yhat_train,y_t)
-    j_cv, error_cv, acc_cv = compute_J(yhat_cv,y_cv)
+    model, j_train, j_cv, history, error_train, error_cv, acc_train, acc_cv = \
+    train(model, x_train, y_train, x_crossval, y_crossval, n_epoch, batch_size)
 
     # Compute F1 score, which is actually the statistic that will
     # be used to rank our proposal
     
+    return model, j_train, j_cv, history, error_train, error_cv, acc_train, acc_cv
+
+def predict(model, x_in):
+    # Now given an input, X, make predictions with our trained model
+    # Softmax will return, for each row in x_t, a 1-D array of len=10
+    # containing the probabilities of each number
+    return np.argmax(tf.nn.softmax(model.predict(x_in, verbose=0)), axis=1)
+
+def train(model, x_train, y_train, x_crossval, y_crossval, n_epoch, batch_size):
+
+    x_t = np.array(x_train)
+    y_t = np.array(y_train)
+    x_cv = np.array(x_crossval)
+    y_cv = np.array(y_crossval)
+
+    history = model.fit(x_t, y_t, epochs=n_epoch, verbose=0, batch_size=batch_size)
+
+    # Make predictions
+    yhat_train = predict(model, x_t)
+    yhat_cv = predict(model, x_cv)
+    
+    j_train, error_train, acc_train = compute_J(yhat_train,y_t)
+    j_cv, error_cv, acc_cv = compute_J(yhat_cv,y_cv)
 
     return model, j_train, j_cv, history, error_train, error_cv, acc_train, acc_cv
 
