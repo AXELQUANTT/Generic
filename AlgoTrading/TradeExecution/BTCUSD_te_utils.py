@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import os
 import pandas as pd
+import pickle
 import random
 import string
 import seaborn as sns
@@ -12,10 +13,115 @@ import sys
 sys.path.insert(1,'/home/axelbm23/Code/ML_AI/Algos/ReinforcementLearning/')
 from agents import DDQN, DDQN_tradexecution, TWAP, RANDOM_TE
 from environments import TradeExecution 
-import time
 import tensorflow as tf
-import tf_keras
-from typing import Any,Optional
+from typing import Any, Tuple, Optional
+
+
+def write_pkl(data:Any, filename:str, path:str) -> None:
+    """
+    Writes data object as a pkl object in path
+    """
+    with open(f'{path}/{filename}.pkl', 'r') as f:
+        pickle.dump(data, f)
+
+def load_pkl(filename:str, path:str) -> Any:
+    """
+    Loads pickle file in path/filename
+    """
+    return pickle.load(f'{path}/{filename}.pkl')
+
+def load_nparray(filename:str, path:str) -> np.array:
+    """
+    Loads numpy array from path/filename
+    """
+    return np.load(f'{path}/{filename}')
+
+def write_nparray(arr:np.array, filename:str, path:str) -> None:
+    """
+    Saves numpy arrray arr into path folder as a binary object
+    """
+    np.save(f'{path}/{filename}', arr)
+
+def get_ids(path:str) -> dict:
+    """
+    Given a txt file with two identifiers
+    separated with comma, this function
+    returns a dict with the first element
+    as key and the second element as value
+    """
+    ids = {}
+    filename = f'{path}/codes.txt'
+    if not os.path.exists(filename):
+        return ids
+        
+    with open(filename,'r') as f:
+        sett_id, id = f.readline()
+        ids[sett_id] = id
+    
+    return ids
+
+# Check if experiment has already been run
+def is_exp_run(id:str, mode:str, path:str) -> Optional[str]:
+    """
+    Returns True if given agent has been run on the mode=mode
+    with settings=sett
+    """
+
+    # Read the file containing the map between the settings and
+    # unique identifiers
+    if mode=='train':
+        ids = get_ids(path)
+        if not ids or id not in ids:
+            return None
+        
+        if id in ids:
+            return ids[id]
+    
+    elif mode=='test':
+        # TO-DO: Implement part of mode=test
+        print('Still to do!')
+    
+    else:
+        raise ValueError(f'mode={mode} is not supported, check input!')
+    
+
+def update_sett(cm_sett:dict, new_key:str, new_val:Any, agent:str) -> dict:
+    """
+    Updates the common settings with the new value, new val, 
+    specified as new_key and returns a new dictionary
+    """
+
+    new_dict = cm_sett.copy()
+    
+    new_dict['pretrain'] = agent == 'ddqn_pre'
+
+    if new_key=='default':
+        return new_dict
+    
+    if new_key in cm_sett:
+        new_dict[new_key] = new_val
+        return new_dict
+    
+    if new_key=='target_copy':
+        new_dict['nn_cpy_cad'] = new_val[0]
+        new_dict['soft_update'] = new_val[1]
+        return new_dict
+
+def create_trial_id(agent:str, params:dict, **kwargs) -> str:
+    """
+    Given a params dictionary, returns a string concatenating key_value-
+    """
+    id = [agent]
+    if agent=='twap':
+        id.append(f'epi_{params['epi']}')
+    else:
+        iter = kwargs.get('iter', None)
+        id.append(f'iter_{iter}')
+        for key,value in params.items():
+            if key!='n_iter':
+                id.append(f'{key}_{value}')
+    
+    return '-'.join(id)
 
 def aggregate_data(df: pd.DataFrame) -> pd.DataFrame:
 
@@ -192,15 +298,66 @@ def select_agent(label:str) -> DDQN:
     
     return ag
 
-def create_ids(k:int, size:int) -> list[str]:
+def create_ids(k:int, size:int, ig_list:list) -> list[str]:
     """
     Creates a unique list of length=size with strings of size k
     from combinations of Ascii carachters and digits.
     """
     ids = set()
     while len(ids) != size:
-        ids.add(''.join(random.choices(string.ascii_uppercase + string.digits, k=k)))
+        identifier = ''.join(random.choices(string.ascii_uppercase + string.digits, k=k))
+        if identifier not in ig_list:
+            ids.add(identifier)
     return list(ids)
+
+
+def train_agent(id:str, sett:dict, agnt:str, env:gym.env,
+                it:int, agent_path:str, logs_path:str) -> None:
+    """
+    Function formats settings and trains the agent.
+    It does not return any variable, but stores
+    the results of the training process in the
+    dedicated folder
+    """
+
+    settings = create_sett(nn_arch=sett['neurons'], act_in=sett['act_as_in'],
+                            loss_func=sett['loss_func'], opt_lr=sett['adam_lr'], 
+                            gamma=sett['gamma'], gr_step=sett['grdy_step'],
+                            greed_unif=sett['grdy_unif'], env=env,
+                            episodes=sett['epi'], buff_size=sett['buff_size'],
+                            batch_size=sett['batch_size'], nn_cpy_cad=sett['nn_cpy_cad'],
+                            soft_update=sett['soft_update'], logs=sett['add_logs'],
+                            solv_metric=sett['solv_metr'], solv_tar=sett['solv_tar'],
+                            pretr=sett['pretrain'], max_poss_act=action_masking,
+                            man_grad=sett['man_grad'])
+
+    # Train the agents
+    agent = select_agent(agnt)(sett=sett)
+    agent.env.reset(0)
+    if agnt.startswith('ddqn'):
+        rew, loss, lgs, _, _ = agent.train()
+    else:
+        rew, loss, lgs = agent.train()
+
+    # Compute stats
+    if agnt != 'twap':
+        # Retrieve the twap experiment reward curve with the same settings
+        twap_sett_id =  create_trial_id(agent='twap', iter=it, params=settings)
+        if is_exp_run(twap_sett_id, mode='train', path=agent_path):
+            twap_rew  = load_nparray(filename=twap_sett_id, path=agent_path)
+            perf_train = compute_perf(rew, twap_rew)
+        else:
+            raise ValueError('TWAP can not be retrieved since it has not been run yet'\
+                                ' check code!')
+
+    # Store rewards, losses, logs and performance as csv files
+    write_nparray(perf_train, f'{id}_vs_twap_perf', logs_path)
+    write_nparray(rew, f'{id}_rewards', logs_path)
+    write_nparray(loss, f'{id}_losses', logs_path)
+    write_pkl(lgs,f'{id}_logs', logs_path)
+
+    # Save the agent and store the unique id 
+    agent.save(agent_path, id)
 
 # One of the issues that we face is that considering the chosen binomial distribution
 # to greedily chose actions, we never explore the scenarios of selling all shares
