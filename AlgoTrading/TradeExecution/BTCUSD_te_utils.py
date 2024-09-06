@@ -113,7 +113,7 @@ def create_trial_id(agent:str, params:dict, **kwargs) -> str:
     """
     id = [agent]
     if agent=='twap':
-        id.append(f'epi_{params['epi']}')
+        id.append(f'epi_{params["epi"]}')
     else:
         iter = kwargs.get('iter', None)
         id.append(f'iter_{iter}')
@@ -311,7 +311,7 @@ def create_ids(k:int, size:int, ig_list:list) -> list[str]:
     return list(ids)
 
 
-def train_agent(id:str, sett:dict, agnt:str, env:gym.env,
+def train_agent(id:str, sett:dict, agnt:str, env:gym.Env,
                 it:int, agent_path:str, logs_path:str) -> None:
     """
     Function formats settings and trains the agent.
