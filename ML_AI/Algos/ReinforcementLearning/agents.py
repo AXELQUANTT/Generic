@@ -1,5 +1,6 @@
 from collections import deque
 from itertools import groupby
+import gymnasium as gym
 import numpy as np
 import random
 from scipy.stats import binom
@@ -7,6 +8,7 @@ import sys
 sys.path.insert(1,"/home/axelbm23/Code/ML_AI/Algos/Miscellaneous/")
 from misc_utils import create_nn
 import tensorflow as tf
+from typing import Tuple
 import pickle
 
 class ExpirienceReplay:
@@ -47,7 +49,6 @@ class ExpirienceReplay:
     def buffer_size(self):
         return len(self._buffer)
     
-
 class DDQN:
     """
     Object implementing a DDQN (double deep Q neuronal network)
@@ -358,6 +359,30 @@ class DDQN:
         best_action = np.argmax(predictions)
         return best_action
     
+    def test(self, env:gym.Env, episodes:int) -> Tuple[np.array, list]:
+        logs = []
+        rew = []
+        # Make sure env is always set to the start
+        s,_ = env.reset(0)
+        for ep in range(episodes):
+            ep_rew = 0
+            done = False
+            while not done:
+                action = self.choose_action(state=s, train=False)# Issue seems that done condition is not satisfied
+                s_prime, reward, done, _, info = env.step(action)
+                logs.append([s, action, reward, s_prime, info['timestamp']])
+                s = s_prime
+                ep_rew += reward
+
+            rew.append(ep_rew)
+            # Reset environment as episode has concluded, so inventory and
+            # rest of quantities need to be reset. Do not reset at index 0
+            # though, as we want to run on different data
+            s,_ = env.reset()
+        rew = np.array(rew)
+
+        return rew, logs
+    
     def save(self, path:str, id:str) -> None:
         """
         Saves current state of the agent in path folder with the name id.
@@ -380,17 +405,17 @@ class DDQN:
     
     def load(self, path:str, id:str):
         """
-        Loads models and all paramteres related to the agent in path with
+        Loads models and all parameters related to the agent in path with
         identifier id
         """
-        
+
         file = open(f'{path}/{id}_sett.pkl', 'rb') 
         for key,value in pickle.load(file).items():
             self.key = value
 
         self.policy_nn = tf.keras.models.load_model(f'{path}/{id}_policy.keras')
         self.target_nn = tf.keras.models.load_model(f'{path}/{id}_target.keras')
-        
+
         return self
 
 class DDQN_tradexecution(DDQN):
@@ -539,7 +564,6 @@ class TWAP(DDQN):
     def _soft_update_policy(self, ep:int) -> None:
         pass
 
-    
     def choose_action(self, state: np.array, train: bool = True):
         return int(self.env.q0/self.env.N)
     
