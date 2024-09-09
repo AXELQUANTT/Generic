@@ -16,6 +16,41 @@ from environments import TradeExecution
 import tensorflow as tf
 from typing import Any, Tuple, Optional, Union
 
+def prep_sett_and_launch_learn(iterations:int, def_sett:dict, new_key:str, 
+                               new_val:Any, agnt:str, path:str, env:gym.Env,
+                               results:dict, logs:dict, stats:dict, exp:dict) -> Tuple[dict, dict, dict, dict]:
+    logs_path = f'{path}/logs'
+    exp_sett = update_sett(cm_sett=def_sett, new_key=new_key, new_val=new_val, agent=agnt)
+    for it in range(iterations):
+        sett_id = create_trial_id(agent=agnt, params=exp_sett, iter=it)
+        id = is_exp_run(id=sett_id, mode='train', path=path)
+        if not id:
+            print('Creating learning curves')
+            # Create a unique identifier, making sure
+            # it was not used by another experiment
+            id = create_ids(k=10, size=1, ig_list=get_ids(path=path).values())
+            rew, loss, lgs, perf_train = train_agent(id=id, sett=exp_sett, agnt=agnt, env=env, out_path=path)
+            # Finally save the trial_id into the codes.txt file
+            write_id(sett_id, id, 'codes', path)
+        else:
+            print('Loading already existing learning curves!')
+
+            rew = load_nparray(f'{id}_rewards_train', logs_path)
+            loss = load_nparray(f'{id}_losses_train', logs_path)
+            lgs = load_pkl(f'{id}_logs_train', logs_path)
+            if agnt != 'twap':
+                perf_train = load_nparray(f'{id}_vs_twap_perf_train', logs_path)
+        
+        # Update the dictionaries with the results of training
+        exp[sett_id] = id
+        results[(agnt, 'rew', it)] = rew
+        results[(agnt, 'loss', it)] = loss
+        logs[(agnt, it)] = lgs
+        if agnt != 'twap':
+            stats[(agnt, it)] = perf_train
+
+    return results, logs, stats, exp
+
 def format_logs(logs:dict, filename:str, path:str) -> pd.DataFrame:
     """
     Function gets logs as a dict, creates a dataframe out of it and
@@ -64,7 +99,6 @@ def write_id(sett:str, id:str, file:str, path:str) -> None:
     file in case it does not exist
     """
 
-    # TO-DO: We are not keeping the old entries in this file, fix this!
     filename = f'{path}/{file}.txt'
     if os.path.exists(filename):
         file = open(filename, 'a')
@@ -84,13 +118,15 @@ def load_pkl(filename:str, path:str) -> Any:
     """
     Loads pickle file in path/filename
     """
-    return pickle.load(f'{path}/{filename}.pkl')
+    with open(f'{path}/{filename}.pkl', 'rb') as f:
+        file = pickle.load(f)
+    return file
 
 def load_nparray(filename:str, path:str) -> np.array:
     """
     Loads numpy array from path/filename
     """
-    return np.load(f'{path}/{filename}.npy')
+    return np.load(f'{path}/{filename}.npy', allow_pickle=True)
 
 def write_nparray(arr:np.array, filename:str, path:str) -> None:
     """
@@ -111,9 +147,11 @@ def get_ids(path:str) -> dict:
         return ids
         
     with open(filename,'r') as f:
-        sett_id, id = f.readline().split('\t')
-        # remove jumpline from the id
-        ids[sett_id] = id[:-1]
+        lines = f.readlines()
+        for line in lines:
+            sett_id, id = line.split('\t')
+            # remove jumpline from the id
+            ids[sett_id] = id[:-1]
     
     return ids
 
@@ -160,7 +198,7 @@ def update_sett(cm_sett:dict, new_key:str, new_val:Any, agent:str) -> dict:
         return new_dict
     
     if new_key=='target_copy':
-        new_dict['nn_cpy_cad'] = new_val[0]
+        new_dict['nn_copy_cadency'] = new_val[0]
         new_dict['soft_update'] = new_val[1]
         return new_dict
     
@@ -170,13 +208,16 @@ def create_trial_id(agent:str, params:dict, **kwargs) -> str:
     """
     id = [agent]
     if agent=='twap':
-        id.append(f'epi_{params["epi"]}')
+        id.append(f'episodes_{params["episodes"]}')
     else:
         iter = kwargs.get('iter', None)
         id.append(f'iter_{iter}')
         for key,value in params.items():
             if key!='n_iter':
-                id.append(f'{key}_{value}')
+                if isinstance(value, list):
+                    id.append(f'{key}_{"_".join([str(x) for x in value])}')
+                else:
+                    id.append(f'{key}_{value}')
     
     return '-'.join(id)
 
@@ -227,18 +268,6 @@ def load_btcusd(path: str,  output_csv: str):
 
 def format_history(hist: list[tuple]) -> pd.DataFrame:
     return pd.DataFrame(hist, columns=['qt', 't', 'action', 'reward', 'algo', 'df_idx', 'episode'])
-
-def format_logs(data: np.array) -> pd.DataFrame:
-    df = pd.DataFrame(
-        data, columns=['state', 'action', 'reward', 'state_prime'])
-    df[['qt', 't']] = df['state'].apply(
-        lambda x: pd.Series(x[0]))
-    df[['qt_prime', 't_prime']] = df['state_prime'].apply(
-        lambda x: pd.Series(x[0]))
-
-    df.drop(['state', 'state_prime'], axis=1, inplace=True)
-
-    return df[['qt', 't', 'action', 'reward', 'qt_prime', 't_prime']]
 
 def plot(data: list, title: str, mavg: bool) -> None:
     serie = pd.Series(data)
@@ -371,7 +400,10 @@ def create_ids(k:int, size:int, ig_list:list) -> Union[str, list[str]]:
     
     return ids.pop()
 
-def train_agent(id:str, sett:dict, agnt:str, env:gym.Env, out_path:str) -> None:
+def train_agent(id:str, sett:dict, agnt:str, env:gym.Env, out_path:str) -> Tuple[np.array, 
+                                                                                 np.array, 
+                                                                                 list, 
+                                                                                 np.array]:
     """
     Function formats settings and trains the agent.
     It does not return any variable, but stores
@@ -384,14 +416,14 @@ def train_agent(id:str, sett:dict, agnt:str, env:gym.Env, out_path:str) -> None:
 
     settings = create_sett(nn_arch=sett['neurons'], act_in=sett['act_as_in'],
                             loss_func=sett['loss_func'], opt_lr=sett['adam_lr'], 
-                            gamma=sett['gamma'], gr_step=sett['grdy_step'],
-                            greed_unif=sett['grdy_unif'], env=env,
-                            episodes=sett['epi'], buff_size=sett['buff_size'],
-                            batch_size=sett['batch_size'], nn_cpy_cad=sett['nn_cpy_cad'],
+                            gamma=sett['gamma'], gr_step=sett['greedy_step'],
+                            greed_unif=sett['greedy_uniform'], env=env,
+                            episodes=sett['episodes'], buff_size=sett['buff_size'],
+                            batch_size=sett['replay_mini_batch'], nn_cpy_cad=sett['nn_copy_cadency'],
                             soft_update=sett['soft_update'], logs=sett['add_logs'],
-                            solv_metric=sett['solv_metr'], solv_tar=sett['solv_tar'],
+                            solv_metric=sett['solve_metric'], solv_tar=sett['solve_target'],
                             pretr=sett['pretrain'], max_poss_act=action_masking,
-                            man_grad=sett['man_grad'])
+                            man_grad=sett['man_gradient'])
 
     # Train the agents
     agent = select_agent(agnt)(settings)
@@ -402,25 +434,28 @@ def train_agent(id:str, sett:dict, agnt:str, env:gym.Env, out_path:str) -> None:
         rew, loss, lgs = agent.train()
 
     # Compute stats
+    perf_train = np.array([])
     if agnt != 'twap':
         # Retrieve the twap experiment reward curve with the same settings
         twap_sett_id =  create_trial_id('twap', sett)
         if is_exp_run(twap_sett_id, 'train', out_path):
             twap_id = get_ids(out_path)[twap_sett_id]
-            twap_rew  = load_nparray(f'{twap_id}_rewards', logs_path)
+            twap_rew  = load_nparray(f'{twap_id}_rewards_train', logs_path)
             perf_train = compute_perf(rew, twap_rew)
-            write_nparray(perf_train, f'{id}_vs_twap_perf', logs_path)
+            write_nparray(perf_train, f'{id}_vs_twap_perf_train', logs_path)
         else:
             raise ValueError('TWAP can not be retrieved since it has not been run yet'\
                                 ' check code!')
-
+        
     # Store rewards, losses, logs and performance as csv files
-    write_nparray(rew, f'{id}_rewards', logs_path)
-    write_nparray(loss, f'{id}_losses', logs_path)
-    write_pkl(lgs, f'{id}_logs', logs_path)
+    write_nparray(rew, f'{id}_rewards_train', logs_path)
+    write_nparray(loss, f'{id}_losses_train', logs_path)
+    write_pkl(lgs, f'{id}_logs_train', logs_path)
 
     # Save the agent and store the unique id 
     agent.save(agent_path, id)
+
+    return rew, loss, lgs, perf_train
 
 # One of the issues that we face is that considering the chosen binomial distribution
 # to greedily chose actions, we never explore the scenarios of selling all shares
