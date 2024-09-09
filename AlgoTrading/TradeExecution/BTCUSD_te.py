@@ -1,7 +1,8 @@
 from BTCUSD_te_utils import create_data_and_env, action_masking , create_trial_id
 from BTCUSD_te_utils import compute_perf, create_sett, select_agent, create_ids
 from BTCUSD_te_utils import update_sett, is_exp_run, get_ids, write_nparray, load_nparray
-from BTCUSD_te_utils import write_pkl, load_pkl, train_agent
+from BTCUSD_te_utils import write_pkl, load_pkl, train_agent, write_id, format_stats
+from BTCUSD_te_utils import format_results, format_logs
 import os
 import sys
 sys.path.insert(1,'/home/axelbm23/Code/Library/')
@@ -14,13 +15,13 @@ common_sett = {'n_iter':3,
                 'gamma':0.99,
                 'grdy_step':0.998,
                 'grdy_unif':False,
-                'epi':4_500, #10_000 in DDQN paper
+                'epi':48,#4_500, #10_000 in DDQN paper
                 'test_epi':450,
                 'buff_size':1_000, #5_000 in DDQN paper
-                'batch_size':32, #32 in DDQN paper
+                'batch_size':16, #32 in DDQN paper
                 'nn_cpy_cad':None,
                 'soft_update':0.005,
-                'neurons':[20]*6, #20 nodesx 6 layers in DDQN paper
+                'neurons':[20]*6, #20 nodes x 6 layers in DDQN paper
                 'act_as_in':True,
                 'add_logs':True,
                 'loss_func':'mean_squared_error',
@@ -32,8 +33,8 @@ common_sett = {'n_iter':3,
 
 # Load BTC_USD perpetual data and create the environment
 dirfile = os.path.abspath(os.path.dirname(__file__))
-ag_path = f'{dirfile}/results/agents'
-logs_path = f'{dirfile}/results/logs'
+gen_path = f'{dirfile}/results' 
+ag_path = f'{gen_path}/agents'
 path = "/home/axelbm23/Code/AlgoTrading/data/BTCUSD_PERP*.csv"
 env_sett = {'t': 30,  # time left to close our position, in seconds
             'inventory': 20,  # Initial inventory
@@ -47,12 +48,7 @@ env_sett = {'t': 30,  # time left to close our position, in seconds
 # time to close our entire position.
 
 train, test, train_env, test_env = create_data_and_env(path, env_sett, 0.8)
-
 agents = ['twap', 'ddqn', 'ddqn_pre', 'random']
-#results_train = {}
-#stats_train = {}
-#logs_train = {}
-i = 0
 
 # What parameters will we play with?
 # nn_architecture
@@ -65,65 +61,77 @@ study_sett = {'neurons':[[20]*3, [20]*4],
               'target_copy':[[None, 0.01], [None, 0.05], [15, None], [150, None]],
               'default':None}
 
+# TO-DO: Re-write this whole logic below so that more parts are shared
+
 # The idea is to get an unique alphanumeric value for 
 # the set of parameters we have chosen, which is more
 # convenient than a very long string
+i = 0
 for agent_i in agents:
-    if agent_i.startswith('ddqn'):
+    if agent_i=='ddqn':
+        # All the experiments should only be with ddqn, not ddqn_pre. Change this logic
         # Update params with the study sett
-        for par_key,par_val in study_sett.items():
-            exp_sett = update_sett(common_sett, par_key, par_val)
-            for it in range(common_sett['n_iter']):
-                sett_id = create_trial_id(agent=agent_i, params=exp_sett, iter=it)
-                id = is_exp_run(id=sett_id, mode='train', path=ag_path)
-                if not id:
-                    # Create a unique identifier, making sure
-                    # it was not used by another experiment
-                    id = create_ids(k=10, size=1, ignoring_list=get_ids(path=ag_path).values())
-                    train_agent(id=id, sett=exp_sett, agnt=agent_i, env=train_env, it=it, agent_path=ag_path, logs_path=logs_path)
+        for par_key, par_val in study_sett.items():
+            # par_val can be an array of elements, iterate over it
+            if par_val:
+                for ind_sett in par_val:
+                    exp_sett = update_sett(cm_sett=common_sett, new_key=par_key, new_val=ind_sett, agent=agent_i)
+                    for it in range(common_sett['n_iter']):
+                        sett_id = create_trial_id(agent=agent_i, params=exp_sett, iter=it)
+                        id = is_exp_run(id=sett_id, mode='train', path=gen_path)
+                        if not id:
+                            # Create a unique identifier, making sure
+                            # it was not used by another experiment
+                            id = create_ids(k=10, size=1, ig_list=get_ids(path=gen_path).values())
+                            train_agent(id=id, sett=exp_sett, agnt=agent_i, env=train_env, out_path=gen_path)
+                            # Finally save the trial_id into the codes.txt file
+                            write_id(sett_id, id, 'codes', gen_path)
+            else:
+                exp_sett = update_sett(cm_sett=common_sett, new_key=par_key, new_val=ind_sett, agent=agent_i)
+                for it in range(common_sett['n_iter']):
+                    sett_id = create_trial_id(agent=agent_i, params=exp_sett, iter=it)
+                    id = is_exp_run(id=sett_id, mode='train', path=gen_path)
+                    if not id:
+                        # Create a unique identifier, making sure
+                        # it was not used by another experiment
+                        id = create_ids(k=10, size=1, ig_list=get_ids(path=gen_path).values())
+                        train_agent(id=id, sett=exp_sett, agnt=agent_i, env=train_env, out_path=gen_path)
+                        # Finally save the trial_id into the codes.txt file
+                        write_id(sett_id, id, 'codes', gen_path)
                     
     elif agent_i=='twap':
         # Deterministic agent, so only need to run it once
-        sett_id = create_trial_id(agent=agent_i, params=exp_sett)
-        id = is_exp_run(id=sett_id, mode='train', path=ag_path)
+        sett_id = create_trial_id(agent=agent_i, params=common_sett)
+        id = is_exp_run(id=sett_id, mode='train', path=gen_path)
         if not id:
-            id = create_ids(k=10, size=1, ignoring_list=get_ids(path=ag_path).values())
-            train_agent(id=id, sett=exp_sett, agnt=agent_i, env=train_env, it=it, agent_path=ag_path, logs_path=logs_path)
+            id = create_ids(k=10, size=1, ig_list=get_ids(path=gen_path).values())
+            train_agent(id=id, sett=common_sett, agnt=agent_i, env=train_env, out_path=gen_path)
+            # Finally save the trial_id into the codes.txt file
+            write_id(sett_id, id, 'codes', gen_path)
 
-    elif agent_i=='random':
+    elif agent_i in ['random', 'ddqn_pre']:
         # Since it's a random agent, the outcome will change
         # trial to trial
         for it in range(common_sett['n_iter']):
-            sett_id = create_trial_id(agent=agent_i, params=exp_sett, iter=it)
-            id = is_exp_run(id=sett_id, mode='train', path=ag_path)
+            sett_id = create_trial_id(agent=agent_i, params=common_sett, iter=it)
+            id = is_exp_run(id=sett_id, mode='train', path=gen_path)
             if not id:
-                id = create_ids(k=10, size=1, ignoring_list=get_ids(path=ag_path).values())
-                train_agent(id=id, sett=exp_sett, agnt=agent_i, env=train_env, it=it, agent_path=ag_path, logs_path=logs_path)
+                id = create_ids(k=10, size=1, ig_list=get_ids(path=gen_path).values())
+                train_agent(id=id, sett=common_sett, agnt=agent_i, env=train_env, out_path=gen_path)
+                # Finally save the trial_id into the codes.txt file
+                write_id(sett_id, id, 'codes', gen_path)
+    else:
+        raise ValueError(f'Unknown agent, {agent_i}, please check implementation')
 
 # TO-DO: Retrieve all the results from this parameter settings choice and 
 # create the output csv files
 
-# Format output objects and write into a csv file
-train_stats_df = pd.DataFrame.from_dict(stats_train, orient='index').reset_index()
-train_stats_df.rename(columns={'level_0':'agent','level_1':'iteration'}, inplace=True)
-train_stats_df.to_csv(f'{dirfile}/results/train_stats.csv')
-
-# Convert dataframe into a tidy format
-results_train_df = pd.DataFrame.from_dict(results_train).unstack().reset_index()
-results_train_df.rename(columns={'level_0':'agent', 'level_1':'metric', 
-                           'level_2':'iter', 'level_3':'episode',
-                           0:'value'},
-                  inplace=True)
-
-logs_train_df = pd.DataFrame.from_dict(logs_train).unstack().reset_index()
-logs_train_df.rename(columns={'level_0':'agent', 'level_1':'iter'}, inplace=True)
-logs_train_df[['state','action','reward', 'state_prime', 'timestamp']] = pd.DataFrame(logs_train_df[0].tolist())
-logs_train_df.drop(['level_2', 0], axis=1, inplace=True)
-logs_train_df.to_csv(f'{dirfile}/results/train_logs.csv')
-
+stats_train_df = format_stats(stats_train, 'train_stats', gen_path)
+results_train_df = format_results(results_train, 'train_results', gen_path)
+logs_train_df = format_logs(logs_train, 'train_logs', gen_path)
 
 # Plot the reward function of each of the agents
-for iter in range(N_ITERATIONS):
+for iter in range(common_sett['n_iter']):
     sns_lineplot(results_train_df.loc[((results_train_df['iter']==iter) & (results_train_df['metric']=='rew')),:],
                 'episode','value', 'agent', f'agents reward vs episode (iter_{iter})')
 
@@ -162,10 +170,8 @@ for iter in range(N_ITERATIONS):
         if agent_i != 'twap':
             stats_test[(agent_i, iter)] = compute_perf(rew, results_test[('twap', 'rew', iter)])
 
-# Compute test statistics
-test_stats_df = pd.DataFrame.from_dict(stats_test, orient='index').reset_index()
-test_stats_df.rename(columns={'level_0':'agent','level_1':'iteration'}, inplace=True)
-test_stats_df.to_csv(f'{dirfile}/results/test_stats.csv')
+# Format and save test statistics
+test_stats_df = format_stats(stats_test, 'test_stats', gen_path)
 
 # Convert dataframe into a tidy format
 results_test_df = pd.DataFrame.from_dict(results_test).unstack().reset_index()

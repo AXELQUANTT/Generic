@@ -14,14 +14,70 @@ sys.path.insert(1,'/home/axelbm23/Code/ML_AI/Algos/ReinforcementLearning/')
 from agents import DDQN, DDQN_tradexecution, TWAP, RANDOM_TE
 from environments import TradeExecution 
 import tensorflow as tf
-from typing import Any, Tuple, Optional
+from typing import Any, Tuple, Optional, Union
 
+def format_logs(logs:dict, filename:str, path:str) -> pd.DataFrame:
+    """
+    Function gets logs as a dict, creates a dataframe out of it and
+    saves it by the name filename in path
+    """
+
+    logs_train_df = pd.DataFrame.from_dict(logs).unstack().reset_index()
+    logs_train_df.rename(columns={'level_0':'agent', 'level_1':'iter'}, inplace=True)
+    logs_train_df[['state','action','reward', 'state_prime', 'timestamp']] = pd.DataFrame(logs_train_df[0].tolist())
+    logs_train_df.drop(['level_2', 0], axis=1, inplace=True)
+    logs_train_df.to_csv(f'{path}/{filename}.csv')
+
+def format_results(results:dict, filename:str, path:str) -> pd.DataFrame:
+    """
+    Function gets dictionary with results, formats it and saves
+    it to the path by the name filename. It also resturns the df.
+    """
+    # Convert dataframe into a tidy format
+    results_df = pd.DataFrame.from_dict(results).unstack().reset_index()
+    results_df.rename(columns={'level_0':'agent', 'level_1':'metric', 
+                            'level_2':'iter', 'level_3':'episode',
+                            0:'value'},
+                    inplace=True)
+    results_df.to_csv(f'{path}/{filename}.csv')
+
+    return results_df
+
+def format_stats(stats:dict, filename:str, path:str) -> pd.DataFrame:
+    """
+    Given a dictionary whose keys are agent and iteration,
+    this function returns a pandas DataFrame and saves it to
+    a local folder by the name label
+    """
+    
+    # Format output objects and write into a csv file
+    stats_df = pd.DataFrame.from_dict(stats, orient='index').reset_index()
+    stats_df.rename(columns={'level_0':'agent','level_1':'iteration'}, inplace=True)
+    stats_df.to_csv(f'{path}/{filename}.csv')
+
+    return stats_df
+
+def write_id(sett:str, id:str, file:str, path:str) -> None:
+    """
+    Given sett and id, this functions writes them separated
+    by comma in the file located in path. It creates the
+    file in case it does not exist
+    """
+
+    # TO-DO: We are not keeping the old entries in this file, fix this!
+    filename = f'{path}/{file}.txt'
+    if os.path.exists(filename):
+        file = open(filename, 'a')
+    else:
+        file = open(filename, 'w+')  
+    file.write(f'{sett}\t{id}\n')
+    file.close()
 
 def write_pkl(data:Any, filename:str, path:str) -> None:
     """
     Writes data object as a pkl object in path
     """
-    with open(f'{path}/{filename}.pkl', 'r') as f:
+    with open(f'{path}/{filename}.pkl', 'wb') as f:
         pickle.dump(data, f)
 
 def load_pkl(filename:str, path:str) -> Any:
@@ -34,7 +90,7 @@ def load_nparray(filename:str, path:str) -> np.array:
     """
     Loads numpy array from path/filename
     """
-    return np.load(f'{path}/{filename}')
+    return np.load(f'{path}/{filename}.npy')
 
 def write_nparray(arr:np.array, filename:str, path:str) -> None:
     """
@@ -55,8 +111,9 @@ def get_ids(path:str) -> dict:
         return ids
         
     with open(filename,'r') as f:
-        sett_id, id = f.readline()
-        ids[sett_id] = id
+        sett_id, id = f.readline().split('\t')
+        # remove jumpline from the id
+        ids[sett_id] = id[:-1]
     
     return ids
 
@@ -106,7 +163,7 @@ def update_sett(cm_sett:dict, new_key:str, new_val:Any, agent:str) -> dict:
         new_dict['nn_cpy_cad'] = new_val[0]
         new_dict['soft_update'] = new_val[1]
         return new_dict
-
+    
 def create_trial_id(agent:str, params:dict, **kwargs) -> str:
     """
     Given a params dictionary, returns a string concatenating key_value-
@@ -298,7 +355,7 @@ def select_agent(label:str) -> DDQN:
     
     return ag
 
-def create_ids(k:int, size:int, ig_list:list) -> list[str]:
+def create_ids(k:int, size:int, ig_list:list) -> Union[str, list[str]]:
     """
     Creates a unique list of length=size with strings of size k
     from combinations of Ascii carachters and digits.
@@ -308,17 +365,22 @@ def create_ids(k:int, size:int, ig_list:list) -> list[str]:
         identifier = ''.join(random.choices(string.ascii_uppercase + string.digits, k=k))
         if identifier not in ig_list:
             ids.add(identifier)
-    return list(ids)
+    
+    if len(ids)>1:
+        return list(ids)
+    
+    return ids.pop()
 
-
-def train_agent(id:str, sett:dict, agnt:str, env:gym.Env,
-                it:int, agent_path:str, logs_path:str) -> None:
+def train_agent(id:str, sett:dict, agnt:str, env:gym.Env, out_path:str) -> None:
     """
     Function formats settings and trains the agent.
     It does not return any variable, but stores
     the results of the training process in the
     dedicated folder
     """
+
+    agent_path = f'{out_path}/agents'
+    logs_path = f'{out_path}/logs'
 
     settings = create_sett(nn_arch=sett['neurons'], act_in=sett['act_as_in'],
                             loss_func=sett['loss_func'], opt_lr=sett['adam_lr'], 
@@ -332,7 +394,7 @@ def train_agent(id:str, sett:dict, agnt:str, env:gym.Env,
                             man_grad=sett['man_grad'])
 
     # Train the agents
-    agent = select_agent(agnt)(sett=sett)
+    agent = select_agent(agnt)(settings)
     agent.env.reset(0)
     if agnt.startswith('ddqn'):
         rew, loss, lgs, _, _ = agent.train()
@@ -342,19 +404,20 @@ def train_agent(id:str, sett:dict, agnt:str, env:gym.Env,
     # Compute stats
     if agnt != 'twap':
         # Retrieve the twap experiment reward curve with the same settings
-        twap_sett_id =  create_trial_id(agent='twap', iter=it, params=settings)
-        if is_exp_run(twap_sett_id, mode='train', path=agent_path):
-            twap_rew  = load_nparray(filename=twap_sett_id, path=agent_path)
+        twap_sett_id =  create_trial_id('twap', sett)
+        if is_exp_run(twap_sett_id, 'train', out_path):
+            twap_id = get_ids(out_path)[twap_sett_id]
+            twap_rew  = load_nparray(f'{twap_id}_rewards', logs_path)
             perf_train = compute_perf(rew, twap_rew)
+            write_nparray(perf_train, f'{id}_vs_twap_perf', logs_path)
         else:
             raise ValueError('TWAP can not be retrieved since it has not been run yet'\
                                 ' check code!')
 
     # Store rewards, losses, logs and performance as csv files
-    write_nparray(perf_train, f'{id}_vs_twap_perf', logs_path)
     write_nparray(rew, f'{id}_rewards', logs_path)
     write_nparray(loss, f'{id}_losses', logs_path)
-    write_pkl(lgs,f'{id}_logs', logs_path)
+    write_pkl(lgs, f'{id}_logs', logs_path)
 
     # Save the agent and store the unique id 
     agent.save(agent_path, id)
