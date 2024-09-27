@@ -1,6 +1,7 @@
 import datetime
 import glob
 import gymnasium as gym
+import json
 import matplotlib.pyplot as plt
 import numpy as np
 import os
@@ -39,15 +40,15 @@ def prep_sett_and_launch_learn(iterations:int, def_sett:dict, new_key:str,
             loss = load_nparray(f'{id}_losses_train', logs_path)
             lgs = load_pkl(f'{id}_logs_train', logs_path)
             if agnt != 'twap':
-                perf_train = load_nparray(f'{id}_vs_twap_perf_train', logs_path)
+                perf_train = load_json(f'{id}_vs_twap_perf_train', logs_path)
         
         # Update the dictionaries with the results of training
         exp[sett_id] = id
-        results[(agnt, 'rew', it)] = rew
-        results[(agnt, 'loss', it)] = loss
-        logs[(agnt, it)] = lgs
+        results[(agnt, 'rew', it, sett_id)] = rew
+        results[(agnt, 'loss', it, sett_id)] = loss
+        logs[(agnt, it, sett_id)] = lgs
         if agnt != 'twap':
-            stats[(agnt, it)] = perf_train
+            stats[(agnt, it, sett_id)] = perf_train
 
     return results, logs, stats, exp
 
@@ -57,11 +58,13 @@ def format_logs(logs:dict, filename:str, path:str) -> pd.DataFrame:
     saves it by the name filename in path
     """
 
-    logs_train_df = pd.DataFrame.from_dict(logs).unstack().reset_index()
-    logs_train_df.rename(columns={'level_0':'agent', 'level_1':'iter'}, inplace=True)
-    logs_train_df[['state','action','reward', 'state_prime', 'timestamp']] = pd.DataFrame(logs_train_df[0].tolist())
-    logs_train_df.drop(['level_2', 0], axis=1, inplace=True)
-    logs_train_df.to_csv(f'{path}/{filename}.csv')
+    logs_df = pd.DataFrame.from_dict(logs).unstack().reset_index()
+    logs_df.rename(columns={'level_0':'agent', 'level_1':'iter', 'level_2':'id'}, inplace=True)
+    logs_df[['state','action','reward', 'state_prime', 'timestamp']] = pd.DataFrame(logs_df[0].tolist())
+    logs_df.drop(['level_3', 0], axis=1, inplace=True)
+    logs_df.to_csv(f'{path}/{filename}.csv')
+
+    return logs_df
 
 def format_results(results:dict, filename:str, path:str) -> pd.DataFrame:
     """
@@ -71,7 +74,7 @@ def format_results(results:dict, filename:str, path:str) -> pd.DataFrame:
     # Convert dataframe into a tidy format
     results_df = pd.DataFrame.from_dict(results).unstack().reset_index()
     results_df.rename(columns={'level_0':'agent', 'level_1':'metric', 
-                            'level_2':'iter', 'level_3':'episode',
+                            'level_2':'iter', 'level_3':'id','level_4':'episode',
                             0:'value'},
                     inplace=True)
     results_df.to_csv(f'{path}/{filename}.csv')
@@ -87,7 +90,7 @@ def format_stats(stats:dict, filename:str, path:str) -> pd.DataFrame:
     
     # Format output objects and write into a csv file
     stats_df = pd.DataFrame.from_dict(stats, orient='index').reset_index()
-    stats_df.rename(columns={'level_0':'agent','level_1':'iteration'}, inplace=True)
+    stats_df.rename(columns={'level_0':'agent','level_1':'iteration', 'level_2':'id'}, inplace=True)
     stats_df.to_csv(f'{path}/{filename}.csv')
 
     return stats_df
@@ -121,6 +124,25 @@ def load_pkl(filename:str, path:str) -> Any:
     with open(f'{path}/{filename}.pkl', 'rb') as f:
         file = pickle.load(f)
     return file
+
+def load_json(filename:str, path:str) -> dict:
+    """
+    Loads key,value pairs as a dictionary
+    """
+    with open(f'{path}/{filename}.json', 'rb') as fp:
+        # Can be the case the file is empty
+        if os.stat(f'{path}/{filename}.json').st_size != 0:
+            return json.load(fp)
+    
+    return {}
+
+def write_json(data:dict, filename:str, path:str) -> None:
+    """
+    Write dict into a json file
+    """
+    with open(f'{path}/{filename}.json', 'w') as fp:
+        json.dump(data, fp)
+        fp.close()
 
 def load_nparray(filename:str, path:str) -> np.array:
     """
@@ -442,7 +464,8 @@ def train_agent(id:str, sett:dict, agnt:str, env:gym.Env, out_path:str) -> Tuple
             twap_id = get_ids(out_path)[twap_sett_id]
             twap_rew  = load_nparray(f'{twap_id}_rewards_train', logs_path)
             perf_train = compute_perf(rew, twap_rew)
-            write_nparray(perf_train, f'{id}_vs_twap_perf_train', logs_path)
+            #write_nparray(perf_train, f'{id}_vs_twap_perf_train', logs_path)
+            write_json(perf_train, f'{id}_vs_twap_perf_train', logs_path)
         else:
             raise ValueError('TWAP can not be retrieved since it has not been run yet'\
                                 ' check code!')

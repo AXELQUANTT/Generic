@@ -1,26 +1,24 @@
-from BTCUSD_te_utils import create_data_and_env, action_masking , create_trial_id
-from BTCUSD_te_utils import compute_perf, create_sett, select_agent, create_ids
-from BTCUSD_te_utils import update_sett, is_exp_run, get_ids, write_nparray, load_nparray
-from BTCUSD_te_utils import write_pkl, load_pkl, train_agent, write_id, format_stats
+from BTCUSD_te_utils import create_data_and_env, action_masking
+from BTCUSD_te_utils import compute_perf, create_sett, select_agent
+from BTCUSD_te_utils import write_nparray, load_nparray
+from BTCUSD_te_utils import write_pkl, load_pkl,format_stats
 from BTCUSD_te_utils import format_results, format_logs, prep_sett_and_launch_learn
 import os
 import sys
 sys.path.insert(1,'/home/axelbm23/Code/Library/')
-#sys.path.insert(2, '/home/axelbm23/Code//ML_AI/Algos/ReinforcementLearning/')
 import numpy as np
 import pandas as pd
 from plotting import sns_lineplot
-#from agents import load_model
 
 # Set up the common settings
 common_sett = {'n_iter':3,
                 'gamma':0.99,
                 'greedy_step':0.998,
                 'greedy_uniform':False,
-                'episodes':20,#4_500, #10_000 in DDQN paper
-                'test_epi':450,
-                'buff_size':1_000, #5_000 in DDQN paper
-                'replay_mini_batch':10, #32 in DDQN paper
+                'episodes':10_00,#4_500, #10_000 in DDQN paper
+                'test_epi':2_000,
+                'buff_size':1_000,#5_000 in DDQN paper
+                'replay_mini_batch':32, #32 in DDQN paper
                 'nn_copy_cadency':None,
                 'soft_update':0.005,
                 'neurons':[20]*6, #20 nodes x 6 layers in DDQN paper
@@ -37,6 +35,7 @@ common_sett = {'n_iter':3,
 dirfile = os.path.abspath(os.path.dirname(__file__))
 gen_path = f'{dirfile}/results' 
 ag_path = f'{gen_path}/agents'
+logs_path = f'{gen_path}/logs'
 path = "/home/axelbm23/Code/AlgoTrading/data/BTCUSD_PERP*.csv"
 env_sett = {'t': 30,  # time left to close our position, in seconds
             'inventory': 20,  # Initial inventory
@@ -57,14 +56,11 @@ agents = ['twap', 'ddqn', 'ddqn_pre', 'random']
 # greedy_step
 # adam_lr
 # copy type
-study_sett = {'neurons':[[20]*3], #[20]*4],
-              'greedy_step':[0.999],# 0.995],
-              'adam_lr':[0.0001],#, 0.0005],
-              'target_copy':[[None,0.01]],#[[None, 0.01], [None, 0.05], [15, None], [150, None]],
+study_sett = {'neurons':[[20]*3, [20]*4],
+              'greedy_step':[0.999, 0.995],
+              'adam_lr':[0.0001, 0.0005],
+              'target_copy':[[None,0.01], [None, 0.05], [15, None], [150, None]],
               'default':None}
-
-# TO-DO: For whatever reason, we only load the first iter, not the second or third, check!
-# Solved, there was a bug in prep_sett_and_launch_learn
 
 # The idea is to get an unique alphanumeric value for 
 # the set of parameters we have chosen, which is more
@@ -108,6 +104,8 @@ for agent_i in agents:
     else:
         raise ValueError(f'Unknown agent, {agent_i}, please check implementation')
 
+# TO-DO: Issue, we need to add the id of the experiment, as different
+# experiments are run for the same agent
 stats_train_df = format_stats(stats_train, 'train_stats', gen_path)
 results_train_df = format_results(results_train, 'train_results', gen_path)
 logs_train_df = format_logs(logs_train, 'train_logs', gen_path)
@@ -131,17 +129,37 @@ test_sett = create_sett(nn_arch=common_sett['neurons'], act_in=common_sett['act_
                             solv_metric=common_sett['solve_metric'], solv_tar=common_sett['solve_target'],
                             pretr=common_sett['pretrain'], max_poss_act=action_masking,
                             man_grad=common_sett['man_gradient'])
+n = len(experiments)
+i = 1
+for agent_i in agents:
+    sel_exps = dict((sett_id, id) for sett_id,id in experiments.items() if sett_id.split('-')[0]==agent_i)
+    for sett_id, id in sel_exps.items():
+        if not os.path.exists(f'{logs_path}/{id}_rewards_test.npy'):
+            model = select_agent(agent_i)(sett=test_sett).load(ag_path, id)
+            rew, logs = model.test(env=test_env, episodes=common_sett['test_epi'])
+            # Write output
+            write_nparray(rew, f'{id}_rewards_test', logs_path)
+            write_pkl(logs, f'{id}_logs_test', logs_path)
+        else:
+            print('Loading test results')
+            rew = load_nparray(f'{id}_rewards_test', logs_path)
+            logs = load_pkl(f'{id}_logs_test', logs_path)
 
-for sett_id, id in experiments.items():
-        agent_i = sett_id.split('-')[0]
-        model = select_agent(agent_i)(sett=test_sett).load(ag_path, id)
-        rew, logs = model.test(env=test_env, episodes=common_sett['test_epi'])
+        # Save the output. 
+        # In case it's twap, then it's the same for all three iterations
+        if agent_i == 'twap':
+            for iter in range(common_sett['n_iter']):
+                results_test[(agent_i, 'rew', iter, sett_id)] = rew
+                logs_test[(agent_i, iter, sett_id)] = logs
+        else:
+            twap_key = [key for key in results_test.keys() if key[0]=='twap' and key[1]=='rew' and key[2]==0][0]
+            iter = int(sett_id.split('-')[1].split('_')[1])
+            results_test[(agent_i, 'rew', iter, sett_id)] = rew
+            logs_test[(agent_i, iter, sett_id)] = logs
+            stats_test[(agent_i, iter, sett_id)] = compute_perf(rew, results_test[twap_key])
         
-        # Save the output
-        logs_test[(agent_i, iter)] = logs
-        results_test[(agent_i, 'rew', iter)] = rew
-        if agent_i != 'twap':
-            stats_test[(agent_i, iter)] = compute_perf(rew, results_test[('twap', 'rew', iter)])
+        print(f'Progress on the test data ... {round(i/n,3)}')
+        i += 1
 
 # Format and save test statistics
 test_stats_df = format_stats(stats_test, 'test_stats', gen_path)
